@@ -86,6 +86,12 @@ def main() -> int:
     log_file_path = os.path.join(tempfile.gettempdir(), "shadow_runner_e2e.log")
     log_file = open(log_file_path, "w")
 
+    # Start from a clean persisted-results store so the /shadow-stats counts
+    # below correspond exactly to this run's requests.
+    db_path = os.path.join(SCRIPT_DIR, "shadow_results.db")
+    if os.path.exists(db_path):
+        os.remove(db_path)
+
     print(f"Launching uvicorn server on {BASE_URL} ...")
     server_proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "main:app", "--host", HOST, "--port", str(PORT)],
@@ -96,6 +102,7 @@ def main() -> int:
 
     results = []
     malformed_results = []
+    shadow_stats = None
     try:
         if not wait_for_server():
             print("FAILED: server did not become healthy in time.")
@@ -128,8 +135,12 @@ def main() -> int:
             malformed_results.append({"name": payload["name"], "status": resp.status_code, "rejected": rejected})
             print(f"  [{payload['name']}] -> HTTP {resp.status_code} ({'rejected as expected' if rejected else 'NOT REJECTED'})")
 
-        # Give the BackgroundTasks (shadow comparisons) time to run and flush logs.
+        # Give the BackgroundTasks (shadow comparisons) time to run, flush logs,
+        # and persist to shadow_results.db.
         time.sleep(3)
+
+        stats_resp = requests.get(f"{BASE_URL}/shadow-stats", timeout=5)
+        shadow_stats = stats_resp.json() if stats_resp.status_code == 200 else None
 
     finally:
         print("\nShutting down server...")
@@ -162,6 +173,13 @@ def main() -> int:
         print("\n  Mismatch/error details:")
         for line in mismatch_lines:
             print(f"    {line}")
+    print("-" * 60)
+    if shadow_stats:
+        print(f"  Persisted shadow_results.db stats: {shadow_stats}")
+        print(f"  Match rate: {shadow_stats['match_rate_pct']}% "
+              f"({shadow_stats['success']}/{shadow_stats['total']})")
+    else:
+        print("  Persisted shadow stats: UNAVAILABLE (/shadow-stats did not respond)")
     print(f"\n  Full server log: {log_file_path}")
     print("=" * 60)
 
@@ -172,11 +190,19 @@ def main() -> int:
         and shadow_mismatch_count == 0
         and shadow_error_count == 0
     )
+    persisted_matches_log = (
+        shadow_stats is not None
+        and shadow_stats["total"] == len(results)
+        and shadow_stats["success"] == len(results)
+        and shadow_stats["mismatch"] == 0
+        and shadow_stats["error"] == 0
+    )
 
-    if all_valid_requests_ok and all_malformed_rejected and shadow_validated:
+    if all_valid_requests_ok and all_malformed_rejected and shadow_validated and persisted_matches_log:
         print("\nRESULT: PASS - Shadow Runner validated all outputs successfully "
-              f"across {len(results)} valid requests ({FUZZ_ITERATIONS} fuzzed) "
-              f"and correctly rejected all {len(malformed_results)} malformed inputs.")
+              f"across {len(results)} valid requests ({FUZZ_ITERATIONS} fuzzed), "
+              f"correctly rejected all {len(malformed_results)} malformed inputs, "
+              f"and persisted a {shadow_stats['match_rate_pct']}% match rate to shadow_results.db.")
         return 0
     else:
         print("\nRESULT: FAIL - see details above / log below.")
@@ -186,6 +212,8 @@ def main() -> int:
             print("  -> one or more malformed requests were NOT rejected")
         if not shadow_validated:
             print("  -> shadow comparator reported a mismatch or error")
+        if not persisted_matches_log:
+            print("  -> persisted shadow_results.db stats did not match expected counts")
         print(log_contents)
         return 1
 

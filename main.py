@@ -17,6 +17,7 @@ import sys
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+import shadow_store
 from modern_logic import run_modern_logic
 
 logging.basicConfig(
@@ -119,6 +120,7 @@ class CobolInterestCalculator:
 
 LIB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "interest_calc.so")
 cobol_calculator = CobolInterestCalculator(LIB_PATH)
+shadow_store.init_db()
 
 app = FastAPI(title="Shadow Runner - Interest Calculation Proxy")
 
@@ -142,11 +144,15 @@ def _run_shadow_comparison(loan_amount: float, interest_rate: float, legacy_resu
     """
     try:
         shadow_result = run_modern_logic(loan_amount, interest_rate)
-    except Exception:
+    except Exception as exc:
         logger.critical(
             "[SHADOW ERROR] modern_logic raised an exception for "
             "loan_amount=%s interest_rate=%s",
             loan_amount, interest_rate, exc_info=True,
+        )
+        shadow_store.record_result(
+            loan_amount, interest_rate, legacy_result, None, None,
+            status="error", detail=repr(exc),
         )
         return
 
@@ -157,11 +163,19 @@ def _run_shadow_comparison(loan_amount: float, interest_rate: float, legacy_resu
             "legacy(cobol)=%s shadow(python)=%s diff=%s (tolerance=%s)",
             loan_amount, interest_rate, legacy_result, shadow_result, diff, MISMATCH_TOLERANCE,
         )
+        shadow_store.record_result(
+            loan_amount, interest_rate, legacy_result, shadow_result, diff,
+            status="mismatch",
+        )
     else:
         logger.info(
             "[SHADOW SUCCESS] loan_amount=%s interest_rate=%s "
             "legacy(cobol)=%s shadow(python)=%s diff=%s",
             loan_amount, interest_rate, legacy_result, shadow_result, diff,
+        )
+        shadow_store.record_result(
+            loan_amount, interest_rate, legacy_result, shadow_result, diff,
+            status="success",
         )
 
 
@@ -192,3 +206,9 @@ def calculate_interest(request: InterestRequest, background_tasks: BackgroundTas
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/shadow-stats")
+def shadow_stats():
+    """Aggregate match-rate across every shadow comparison recorded so far."""
+    return shadow_store.get_match_stats()
