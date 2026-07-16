@@ -1,0 +1,11 @@
+services:
+  shadow-runner:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - shadow_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  shadow_data:

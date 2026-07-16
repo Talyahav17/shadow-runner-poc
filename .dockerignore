@@ -1,0 +1,15 @@
+.git
+node_modules
+__pycache__
+*.pyc
+.pytest_cache
+.DS_Store
+*.so
+*.dylib
+*.dll
+shadow_results.db
+src
+package.json
+package-lock.json
+README.md
+SHADOW_RUNNER.md

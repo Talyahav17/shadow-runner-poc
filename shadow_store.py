@@ -11,7 +11,11 @@ import sqlite3
 import time
 from typing import Optional
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shadow_results.db")
+# SHADOW_DB_DIR lets a deployment (e.g. the Docker image) point this at a
+# mounted volume so match-rate history survives a container restart; local
+# dev defaults to alongside this file, unchanged.
+DB_DIR = os.environ.get("SHADOW_DB_DIR", os.path.dirname(os.path.abspath(__file__)))
+DB_PATH = os.path.join(DB_DIR, "shadow_results.db")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS shadow_results (
@@ -29,6 +33,7 @@ CREATE TABLE IF NOT EXISTS shadow_results (
 
 
 def init_db(db_path: str = DB_PATH) -> None:
+    os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
     conn = sqlite3.connect(db_path)
     try:
         conn.execute(_SCHEMA)

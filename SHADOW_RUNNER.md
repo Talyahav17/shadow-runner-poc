@@ -115,12 +115,39 @@ the modern path only once the match rate is provably high enough.
 
 ## Running It Yourself
 
+### Option A — Docker (recommended for client handoff)
+
+The only prerequisite is [Docker](https://www.docker.com/products/docker-desktop/).
+No Python, pip, or COBOL toolchain needs to be installed on the host — the
+image compiles `interest_calc.cbl` fresh at build time and runs the whole
+service in one container.
+
+```bash
+docker compose up --build
+```
+
+Then, in another terminal:
+
+```bash
+curl -X POST localhost:8000/calculate-interest \
+  -H "Content-Type: application/json" \
+  -d '{"loan_amount": 1000.00, "interest_rate": 5.00}'
+
+curl localhost:8000/shadow-stats
+```
+
+Match-rate history is written to a named Docker volume (`shadow_data`), so
+it survives `docker compose restart` — only `docker compose down -v` wipes
+it. Stop the service with `docker compose down`.
+
+### Option B — Native (for development on this codebase)
+
 ```bash
 # 1. Compile the legacy COBOL routine to a shared library
 cobc -m -o interest_calc.so interest_calc.cbl
 
-# 2. Install Python dependencies
-pip3 install fastapi "uvicorn[standard]" requests
+# 2. Install pinned Python dependencies
+pip3 install -r requirements.txt
 
 # 3. Run the unit tests for the modern replacement
 python3 -m pytest test_modern_logic.py -v
