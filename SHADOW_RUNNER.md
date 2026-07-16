@@ -164,6 +164,16 @@ curl -X POST localhost:8000/calculate-interest \
 
 ---
 
+## Continuous Integration
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push
+and pull request: it compiles the COBOL routine, runs the unit test suite,
+runs the full end-to-end + fuzz verification, and separately builds and
+smoke-tests the Docker image. Push this repo to GitHub and it runs
+automatically — no setup needed.
+
+---
+
 ## Why This De-Risks a Real Migration
 
 - **Zero blast radius**: the modern code path never touches what the
