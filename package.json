@@ -1,0 +1,25 @@
+{
+  "name": "secure-auditor",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node src/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@octokit/rest": "^22.0.1",
+    "chalk": "^5.6.2",
+    "commander": "^15.0.0",
+    "inquirer": "^14.0.2",
+    "node-fetch": "^3.3.2",
+    "ora": "^9.4.0"
+  },
+  "type": "module",
+  "bin": {
+    "secure-auditor": "./src/index.js"
+  }
+}

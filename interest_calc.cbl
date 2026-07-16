@@ -1,0 +1,25 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. INTEREST-CALC.
+
+       ENVIRONMENT DIVISION.
+
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01  WS-RATE-DECIMAL       PIC 9(2)V9(9) COMP-3.
+
+       LINKAGE SECTION.
+       01  LS-LOAN-AMOUNT        PIC 9(7)V99.
+       01  LS-INTEREST-RATE      PIC 9(2)V99.
+       01  LS-RESULT             PIC 9(7)V99.
+
+       PROCEDURE DIVISION USING LS-LOAN-AMOUNT
+                                 LS-INTEREST-RATE
+                                 LS-RESULT.
+
+       MAIN-LOGIC.
+           COMPUTE WS-RATE-DECIMAL = LS-INTEREST-RATE / 100
+           COMPUTE LS-RESULT ROUNDED =
+               LS-LOAN-AMOUNT * WS-RATE-DECIMAL
+           GOBACK.
+
+       END PROGRAM INTEREST-CALC.
