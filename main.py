@@ -18,6 +18,16 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 import shadow_store
+from field_specs import (
+    LOAN_INT_DIGITS,
+    LOAN_DEC_DIGITS,
+    RATE_INT_DIGITS,
+    RATE_DEC_DIGITS,
+    RESULT_INT_DIGITS,
+    RESULT_DEC_DIGITS,
+    MAX_LOAN_AMOUNT,
+    MAX_INTEREST_RATE,
+)
 from modern_logic import run_modern_logic
 
 logging.basicConfig(
@@ -28,17 +38,6 @@ logging.basicConfig(
 logger = logging.getLogger("shadow_runner")
 
 MISMATCH_TOLERANCE = 0.001
-
-# --- COBOL PIC clause widths (DISPLAY / zoned-decimal, no COMP usage) ---
-# LS-LOAN-AMOUNT   PIC 9(7)V99  -> 7 integer digits + 2 decimal digits
-# LS-INTEREST-RATE PIC 9(2)V99  -> 2 integer digits + 2 decimal digits
-# LS-RESULT        PIC 9(7)V99  -> 7 integer digits + 2 decimal digits
-LOAN_INT_DIGITS, LOAN_DEC_DIGITS = 7, 2
-RATE_INT_DIGITS, RATE_DEC_DIGITS = 2, 2
-RESULT_INT_DIGITS, RESULT_DEC_DIGITS = 7, 2
-
-MAX_LOAN_AMOUNT = 10 ** LOAN_INT_DIGITS - 1 + (10 ** LOAN_DEC_DIGITS - 1) / 10 ** LOAN_DEC_DIGITS
-MAX_INTEREST_RATE = 10 ** RATE_INT_DIGITS - 1 + (10 ** RATE_DEC_DIGITS - 1) / 10 ** RATE_DEC_DIGITS
 
 
 class CobolLibraryError(RuntimeError):

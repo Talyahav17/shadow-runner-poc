@@ -10,11 +10,14 @@ COBOL's ROUNDED clause on a PIC 9(7)V99 field.
 
 from decimal import Decimal, ROUND_HALF_UP
 
+from field_specs import MAX_LOAN_AMOUNT_STR, MAX_INTEREST_RATE_STR
+
 TWO_PLACES = Decimal("0.01")
 
-# Matches COBOL PIC 9(7)V99 / PIC 9(2)V99 (unsigned, fixed digit counts)
-MAX_LOAN_AMOUNT = Decimal("9999999.99")
-MAX_INTEREST_RATE = Decimal("99.99")
+# Matches COBOL PIC 9(7)V99 / PIC 9(2)V99 (unsigned, fixed digit counts) --
+# derived from field_specs.py so this can never drift from main.py's limits.
+MAX_LOAN_AMOUNT = Decimal(MAX_LOAN_AMOUNT_STR)
+MAX_INTEREST_RATE = Decimal(MAX_INTEREST_RATE_STR)
 
 
 def run_modern_logic(loan: float, rate: float) -> float:
