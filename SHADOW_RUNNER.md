@@ -169,15 +169,18 @@ Match-rate history is written to a named Docker volume (`shadow_data`), so
 it survives `docker compose restart` — only `docker compose down -v` wipes
 it. Stop the service with `docker compose down`.
 
-To pin a fixed key instead of a random one each run, set it in
-`docker-compose.yml`:
+To pin a fixed key instead of a random one each run, copy `.env.example` to
+`.env` and set it there (`.env` is gitignored, so the real key never gets
+committed):
 
-```yaml
-services:
-  shadow-runner:
-    environment:
-      - SHADOW_RUNNER_API_KEY=your-fixed-key-here
+```bash
+cp .env.example .env
+echo "SHADOW_RUNNER_API_KEY=$(openssl rand -base64 24)" > .env
+docker compose up --build
 ```
+
+`docker-compose.yml` already reads `SHADOW_RUNNER_API_KEY` from `.env` /
+the shell environment and passes it through.
 
 ### Option B — Native (for development on this codebase)
 

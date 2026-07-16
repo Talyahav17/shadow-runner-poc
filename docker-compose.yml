@@ -3,6 +3,12 @@ services:
     build: .
     ports:
       - "8000:8000"
+    environment:
+      # Set SHADOW_RUNNER_API_KEY in a .env file (see .env.example) or the
+      # host shell to pin a fixed key across restarts. Left unset/empty,
+      # the service falls back to its own secure default: a random key
+      # generated and logged once at startup.
+      - SHADOW_RUNNER_API_KEY=${SHADOW_RUNNER_API_KEY:-}
     volumes:
       - shadow_data:/app/data
     restart: unless-stopped
