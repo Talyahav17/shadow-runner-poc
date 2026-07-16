@@ -68,6 +68,20 @@ def _decode_fixed_point(raw: bytes, int_digits: int, dec_digits: int) -> float:
     return scaled / (10 ** dec_digits)
 
 
+def _canonicalize_to_field_precision(value: float, dec_digits: int) -> float:
+    """Round a value down to what a PIC 9(n)V9(dec_digits) field can hold.
+
+    The legacy COBOL field only has room for `dec_digits` fractional
+    digits, so any extra precision in the caller's input is silently
+    dropped the moment it's encoded for COBOL. The shadow (Python) path
+    must see the exact same rounded value -- otherwise it "sees" precision
+    the legacy system never had, and disagrees with production on inputs
+    that were never actually equal once encoded.
+    """
+    scale = 10 ** dec_digits
+    return round(value * scale) / scale
+
+
 class CobolInterestCalculator:
     """ctypes wrapper around the compiled interest_calc.so module."""
 
@@ -153,16 +167,22 @@ def _run_shadow_comparison(loan_amount: float, interest_rate: float, legacy_resu
 
 @app.post("/calculate-interest", response_model=InterestResponse)
 def calculate_interest(request: InterestRequest, background_tasks: BackgroundTasks):
+    # 0. Canonicalize to the legacy field precision *before* either engine
+    #    runs, so both see identical inputs -- not the caller's raw floats,
+    #    which may carry more precision than the COBOL PIC clauses hold.
+    loan_amount = _canonicalize_to_field_precision(request.loan_amount, LOAN_DEC_DIGITS)
+    interest_rate = _canonicalize_to_field_precision(request.interest_rate, RATE_DEC_DIGITS)
+
     # 1. Production path: legacy COBOL, synchronous, authoritative.
     try:
-        legacy_result = cobol_calculator.calculate(request.loan_amount, request.interest_rate)
+        legacy_result = cobol_calculator.calculate(loan_amount, interest_rate)
     except CobolLibraryError as exc:
         logger.critical("[COBOL ERROR] %s", exc)
         raise HTTPException(status_code=502, detail="Legacy calculation engine failure") from exc
 
     # 2. Shadow path: modern Python, deferred until after the response is sent.
     background_tasks.add_task(
-        _run_shadow_comparison, request.loan_amount, request.interest_rate, legacy_result
+        _run_shadow_comparison, loan_amount, interest_rate, legacy_result
     )
 
     # 3. Safe return: caller always gets the legacy result.

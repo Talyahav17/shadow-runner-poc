@@ -1,14 +1,17 @@
 """End-to-end verification of the Shadow Runner service.
 
 Launches the FastAPI app (main:app) via uvicorn in a background process,
-fires 5 test payloads at /calculate-interest, inspects the captured server
-logs for "[SHADOW SUCCESS]" markers, and shuts the server down.
+fires 5 fixed test payloads plus a randomized fuzz/soak batch and a batch
+of malformed inputs at /calculate-interest, inspects the captured server
+logs for "[SHADOW SUCCESS]" / "[SHADOW MISMATCH]" / "[SHADOW ERROR]"
+markers, and shuts the server down.
 
 Exit code 0 on success, 1 on failure. Run directly with:
     python3 test_e2e_shadow.py
 """
 
 import os
+import random
 import subprocess
 import sys
 import tempfile
@@ -21,10 +24,17 @@ PORT = 8199
 BASE_URL = f"http://{HOST}:{PORT}"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# 5 payloads: a plain passing case, zero values, a typical case, and two
-# that probe the decimal boundaries of the COBOL PIC 9(7)V99 / PIC 9(2)V99
-# fields (max representable loan+rate, and a tiny loan against the max rate
-# to exercise sub-cent rounding).
+FUZZ_SEED = 42
+FUZZ_ITERATIONS = 40
+
+# COBOL PIC 9(7)V99 / PIC 9(2)V99 capacity limits (see main.py).
+MAX_LOAN_AMOUNT = 9999999.99
+MAX_INTEREST_RATE = 99.99
+
+# 5 fixed payloads: a plain passing case, zero values, a typical case, and
+# two that probe the decimal boundaries of the COBOL PIC 9(7)V99 / PIC
+# 9(2)V99 fields (max representable loan+rate, and a tiny loan against the
+# max rate to exercise sub-cent rounding).
 TEST_PAYLOADS = [
     {"name": "basic_pass", "loan_amount": 1000.00, "interest_rate": 5.00},
     {"name": "zero_values", "loan_amount": 0.00, "interest_rate": 0.00},
@@ -32,6 +42,31 @@ TEST_PAYLOADS = [
     {"name": "max_field_boundary", "loan_amount": 9999999.99, "interest_rate": 99.99},
     {"name": "sub_cent_rounding_boundary", "loan_amount": 0.01, "interest_rate": 99.99},
 ]
+
+# Inputs the API must reject (4xx) before either calculation path ever runs.
+MALFORMED_PAYLOADS = [
+    {"name": "negative_loan", "loan_amount": -100.00, "interest_rate": 5.00},
+    {"name": "negative_rate", "loan_amount": 1000.00, "interest_rate": -5.00},
+    {"name": "loan_over_capacity", "loan_amount": 10000000.00, "interest_rate": 5.00},
+    {"name": "rate_over_capacity", "loan_amount": 1000.00, "interest_rate": 100.00},
+    {"name": "non_numeric_loan", "loan_amount": "not-a-number", "interest_rate": 5.00},
+    {"name": "missing_rate_field", "loan_amount": 1000.00},
+]
+
+
+def generate_fuzz_payloads(count: int, seed: int) -> list:
+    """Random *valid* inputs spanning the full field range and varying
+    decimal precision (1-6 fractional digits), to probe for any rounding
+    divergence between the COBOL fixed-width encoding and the Python
+    Decimal path that isn't caught by the 5 fixed test cases."""
+    rng = random.Random(seed)
+    payloads = []
+    for i in range(count):
+        precision = rng.randint(1, 6)
+        loan = round(rng.uniform(0, MAX_LOAN_AMOUNT), precision)
+        rate = round(rng.uniform(0, MAX_INTEREST_RATE), precision)
+        payloads.append({"name": f"fuzz_{i:02d}_p{precision}", "loan_amount": loan, "interest_rate": rate})
+    return payloads
 
 
 def wait_for_server(timeout: float = 15.0) -> bool:
@@ -60,11 +95,12 @@ def main() -> int:
     )
 
     results = []
+    malformed_results = []
     try:
         if not wait_for_server():
             print("FAILED: server did not become healthy in time.")
             return 1
-        print("Server is up. Sending 5 test payloads...\n")
+        print("Server is up. Sending 5 fixed test payloads...\n")
 
         for payload in TEST_PAYLOADS:
             body = {"loan_amount": payload["loan_amount"], "interest_rate": payload["interest_rate"]}
@@ -74,8 +110,26 @@ def main() -> int:
             results.append({"name": payload["name"], "request": body, "status": resp.status_code, "result": result_value})
             print(f"  [{payload['name']}] -> HTTP {resp.status_code}, result={result_value}")
 
+        fuzz_payloads = generate_fuzz_payloads(FUZZ_ITERATIONS, FUZZ_SEED)
+        print(f"\nFuzzing with {len(fuzz_payloads)} randomized valid payloads (seed={FUZZ_SEED})...")
+        for payload in fuzz_payloads:
+            body = {"loan_amount": payload["loan_amount"], "interest_rate": payload["interest_rate"]}
+            resp = requests.post(f"{BASE_URL}/calculate-interest", json=body, timeout=5)
+            ok = resp.status_code == 200
+            result_value = resp.json().get("result") if ok else None
+            results.append({"name": payload["name"], "request": body, "status": resp.status_code, "result": result_value})
+        print(f"  sent {len(fuzz_payloads)} fuzz payloads")
+
+        print(f"\nProbing {len(MALFORMED_PAYLOADS)} malformed payloads (must be rejected before reaching either engine)...")
+        for payload in MALFORMED_PAYLOADS:
+            body = {k: v for k, v in payload.items() if k != "name"}
+            resp = requests.post(f"{BASE_URL}/calculate-interest", json=body, timeout=5)
+            rejected = 400 <= resp.status_code < 500
+            malformed_results.append({"name": payload["name"], "status": resp.status_code, "rejected": rejected})
+            print(f"  [{payload['name']}] -> HTTP {resp.status_code} ({'rejected as expected' if rejected else 'NOT REJECTED'})")
+
         # Give the BackgroundTasks (shadow comparisons) time to run and flush logs.
-        time.sleep(2)
+        time.sleep(3)
 
     finally:
         print("\nShutting down server...")
@@ -93,27 +147,45 @@ def main() -> int:
     shadow_success_count = log_contents.count("[SHADOW SUCCESS]")
     shadow_mismatch_count = log_contents.count("[SHADOW MISMATCH]")
     shadow_error_count = log_contents.count("[SHADOW ERROR]")
+    mismatch_lines = [line for line in log_contents.splitlines() if "[SHADOW MISMATCH]" in line or "[SHADOW ERROR]" in line]
 
     print("\n" + "=" * 60)
-    print("SHADOW RUNNER E2E VERIFICATION SUMMARY")
+    print("SHADOW RUNNER E2E + FUZZ VERIFICATION SUMMARY")
     print("=" * 60)
-    for r in results:
-        print(f"  {r['name']:<30} HTTP {r['status']}  result={r['result']}")
+    print(f"  Fixed + fuzz requests sent:      {len(results)}")
+    print(f"  Malformed requests sent:         {len(malformed_results)}")
     print("-" * 60)
     print(f"  [SHADOW SUCCESS] markers found:  {shadow_success_count}")
     print(f"  [SHADOW MISMATCH] markers found: {shadow_mismatch_count}")
     print(f"  [SHADOW ERROR] markers found:    {shadow_error_count}")
-    print(f"  Full server log: {log_file_path}")
+    if mismatch_lines:
+        print("\n  Mismatch/error details:")
+        for line in mismatch_lines:
+            print(f"    {line}")
+    print(f"\n  Full server log: {log_file_path}")
     print("=" * 60)
 
-    all_requests_ok = all(r["status"] == 200 for r in results)
-    shadow_validated = shadow_success_count == len(TEST_PAYLOADS) and shadow_mismatch_count == 0 and shadow_error_count == 0
+    all_valid_requests_ok = all(r["status"] == 200 for r in results)
+    all_malformed_rejected = all(m["rejected"] for m in malformed_results)
+    shadow_validated = (
+        shadow_success_count == len(results)
+        and shadow_mismatch_count == 0
+        and shadow_error_count == 0
+    )
 
-    if all_requests_ok and shadow_validated:
-        print("\nRESULT: PASS - Shadow Runner validated all outputs successfully.")
+    if all_valid_requests_ok and all_malformed_rejected and shadow_validated:
+        print("\nRESULT: PASS - Shadow Runner validated all outputs successfully "
+              f"across {len(results)} valid requests ({FUZZ_ITERATIONS} fuzzed) "
+              f"and correctly rejected all {len(malformed_results)} malformed inputs.")
         return 0
     else:
-        print("\nRESULT: FAIL - see log for details.")
+        print("\nRESULT: FAIL - see details above / log below.")
+        if not all_valid_requests_ok:
+            print("  -> one or more valid requests did not return HTTP 200")
+        if not all_malformed_rejected:
+            print("  -> one or more malformed requests were NOT rejected")
+        if not shadow_validated:
+            print("  -> shadow comparator reported a mismatch or error")
         print(log_contents)
         return 1
 
