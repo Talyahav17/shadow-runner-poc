@@ -1,0 +1,361 @@
+<title>Shadow Runner Dashboard</title>
+<style>
+  .viz-root {
+    --surface-1:      #fcfcfb;
+    --page:           #f9f9f7;
+    --text-primary:   #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted:     #898781;
+    --gridline:       #e1e0d9;
+    --baseline:       #c3c2b7;
+    --border:         rgba(11,11,11,0.10);
+    --series-1:       #2a78d6;
+    --status-good:      #0ca30c;
+    --status-warning:   #fab219;
+    --status-serious:   #ec835a;
+    --status-critical:  #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    .viz-root {
+      --surface-1:      #1a1a19;
+      --page:           #0d0d0d;
+      --text-primary:   #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted:     #898781;
+      --gridline:       #2c2c2a;
+      --baseline:       #383835;
+      --border:         rgba(255,255,255,0.10);
+      --series-1:       #3987e5;
+      --status-good:      #0ca30c;
+      --status-warning:   #fab219;
+      --status-serious:   #ec835a;
+      --status-critical:  #d03b3b;
+    }
+  }
+
+  .viz-root {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--page);
+    color: var(--text-primary);
+    min-height: 100vh;
+    box-sizing: border-box;
+    padding: 32px 24px 64px;
+  }
+  .viz-root * { box-sizing: border-box; }
+
+  .wrap { max-width: 960px; margin: 0 auto; }
+
+  h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
+  .subtitle { color: var(--text-secondary); font-size: 14px; margin: 0 0 28px; }
+
+  .card {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+
+  /* --- API key gate --- */
+  #gate { max-width: 420px; margin: 80px auto; text-align: center; }
+  #gate p { color: var(--text-secondary); font-size: 14px; }
+  #gate input {
+    width: 100%; padding: 10px 12px; font-size: 14px;
+    border: 1px solid var(--baseline); border-radius: 6px;
+    background: var(--surface-1); color: var(--text-primary);
+    margin-bottom: 12px;
+  }
+  #gate button, .refresh-btn {
+    padding: 10px 16px; font-size: 14px; font-weight: 600;
+    border: none; border-radius: 6px; cursor: pointer;
+    background: var(--series-1); color: white;
+  }
+  #gate-error { color: var(--status-critical); font-size: 13px; min-height: 18px; }
+
+  /* --- Hero figure --- */
+  .hero-label { color: var(--text-secondary); font-size: 13px; margin: 0 0 6px; }
+  .hero-value { font-size: 48px; font-weight: 600; line-height: 1; margin: 0; }
+  .hero-sub { color: var(--text-muted); font-size: 13px; margin-top: 6px; }
+
+  /* --- Meter --- */
+  .meter-track {
+    width: 100%; height: 10px; border-radius: 5px;
+    background: var(--gridline); margin-top: 16px; overflow: hidden;
+  }
+  .meter-fill { height: 100%; border-radius: 5px; transition: width .3s ease; }
+
+  /* --- KPI row --- */
+  .kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .kpi-tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+  .kpi-label { font-size: 12px; color: var(--text-secondary); margin: 0 0 6px; }
+  .kpi-value { font-size: 26px; font-weight: 600; margin: 0; }
+  .kpi-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+
+  /* --- Chart --- */
+  .chart-title { font-size: 14px; font-weight: 600; margin: 0 0 2px; }
+  .chart-caption { font-size: 12px; color: var(--text-muted); margin: 0 0 12px; }
+  svg.trend { width: 100%; height: 180px; overflow: visible; }
+  .tooltip {
+    position: absolute; pointer-events: none; font-size: 12px;
+    background: var(--text-primary); color: var(--page);
+    padding: 6px 10px; border-radius: 6px; white-space: nowrap;
+    transform: translate(-50%, -130%); opacity: 0; transition: opacity .1s;
+  }
+
+  /* --- Table --- */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--text-muted); font-weight: 500; font-size: 12px; padding: 6px 8px; border-bottom: 1px solid var(--gridline); }
+  td { padding: 7px 8px; border-bottom: 1px solid var(--gridline); font-variant-numeric: tabular-nums; }
+  tr:last-child td { border-bottom: none; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); }
+  .pill .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+
+  .top-row { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; }
+  .top-row button { background: none; border: none; color: var(--text-secondary); font-size: 12px; cursor: pointer; text-decoration: underline; padding: 0; }
+  .empty-state { color: var(--text-muted); font-size: 13px; text-align: center; padding: 24px 0; }
+</style>
+
+<div class="viz-root">
+  <div id="gate">
+    <h1>Shadow Runner Dashboard</h1>
+    <p>Enter the service's API key (printed in the server log on first run, or set via <code>SHADOW_RUNNER_API_KEY</code>).</p>
+    <input id="gate-input" type="password" placeholder="API key" autocomplete="off" />
+    <div id="gate-error"></div>
+    <button onclick="submitKey()">Connect</button>
+  </div>
+
+  <div id="dashboard" class="wrap" style="display:none">
+    <div class="top-row">
+      <div>
+        <h1>Shadow Runner Dashboard</h1>
+        <p class="subtitle">Legacy COBOL vs. modern Python — live comparison results</p>
+      </div>
+      <button onclick="changeKey()">change API key</button>
+    </div>
+
+    <div class="card">
+      <p class="hero-label">Match rate</p>
+      <p class="hero-value" id="hero-value">—</p>
+      <div class="meter-track"><div class="meter-fill" id="meter-fill" style="width:0%"></div></div>
+      <p class="hero-sub" id="hero-sub"></p>
+    </div>
+
+    <div class="kpi-row" id="kpi-row"></div>
+    <div style="height:20px"></div>
+
+    <div class="card" style="position:relative">
+      <p class="chart-title">Cumulative match rate</p>
+      <p class="chart-caption" id="chart-caption">over the most recent requests, oldest to newest</p>
+      <svg class="trend" id="trend-svg" viewBox="0 0 600 180" preserveAspectRatio="none"></svg>
+      <div class="tooltip" id="tooltip"></div>
+    </div>
+
+    <div class="card">
+      <p class="chart-title">Recent activity</p>
+      <p class="chart-caption">table view — the same data behind the chart above</p>
+      <div id="table-container"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const KEY_STORAGE = "shadow_runner_api_key";
+  const HISTORY_LIMIT = 100;
+  let refreshTimer = null;
+  let lastPoints = [];
+
+  // sessionStorage, not localStorage: the key is cleared when the tab
+  // closes rather than persisting indefinitely, which shrinks the window
+  // an unrelated future XSS bug (if one were ever introduced) could steal
+  // it in. Trade-off: re-enter the key once per browser session.
+  function getKey() { return sessionStorage.getItem(KEY_STORAGE); }
+  function setKey(k) { sessionStorage.setItem(KEY_STORAGE, k); }
+  function clearKey() { sessionStorage.removeItem(KEY_STORAGE); }
+
+  function submitKey() {
+    const val = document.getElementById("gate-input").value.trim();
+    if (!val) return;
+    setKey(val);
+    document.getElementById("gate-error").textContent = "";
+    boot();
+  }
+
+  function changeKey() {
+    clearKey();
+    if (refreshTimer) clearInterval(refreshTimer);
+    document.getElementById("dashboard").style.display = "none";
+    document.getElementById("gate").style.display = "block";
+    document.getElementById("gate-input").value = "";
+  }
+
+  async function authedFetch(path) {
+    const resp = await fetch(path, { headers: { "X-API-Key": getKey() || "" } });
+    if (resp.status === 401) {
+      const err = new Error("unauthorized");
+      err.unauthorized = true;
+      throw err;
+    }
+    return resp.json();
+  }
+
+  function fmtPct(v) { return v === null || v === undefined ? "—" : v.toFixed(1) + "%"; }
+  function fmtMoney(v) { return v === null || v === undefined ? "—" : "$" + Number(v).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}); }
+  function fmtTime(ts) { return new Date(ts * 1000).toLocaleTimeString(); }
+
+  function severity(pct) {
+    if (pct === null || pct === undefined) return { color: "var(--baseline)", label: "no data" };
+    if (pct >= 99) return { color: "var(--status-good)", label: "healthy" };
+    if (pct >= 95) return { color: "var(--status-warning)", label: "watch" };
+    return { color: "var(--status-critical)", label: "action needed" };
+  }
+
+  function statusPill(status) {
+    const map = {
+      success:  { color: "var(--status-good)",     icon: "✓", label: "Match" },
+      mismatch: { color: "var(--status-critical)", icon: "✕", label: "Mismatch" },
+      error:    { color: "var(--status-serious)",  icon: "!",      label: "Error" },
+    };
+    const s = map[status] || { color: "var(--text-muted)", icon: "?", label: status };
+    return `<span class="pill"><span class="dot" style="background:${s.color}"></span>${s.icon} ${s.label}</span>`;
+  }
+
+  function renderKpis(stats) {
+    const tiles = [
+      { label: "Total requests", value: stats.total, color: null },
+      { label: "Success", value: stats.success, color: "var(--status-good)" },
+      { label: "Mismatch", value: stats.mismatch, color: "var(--status-critical)" },
+      { label: "Error", value: stats.error, color: "var(--status-serious)" },
+    ];
+    document.getElementById("kpi-row").innerHTML = tiles.map(t => `
+      <div class="kpi-tile">
+        <p class="kpi-label">${t.color ? `<span class="kpi-dot" style="background:${t.color}"></span>` : ""}${t.label}</p>
+        <p class="kpi-value">${t.value.toLocaleString()}</p>
+      </div>
+    `).join("");
+  }
+
+  function renderHero(stats) {
+    const sev = severity(stats.match_rate_pct);
+    document.getElementById("hero-value").textContent = fmtPct(stats.match_rate_pct);
+    document.getElementById("hero-value").style.color = stats.total ? "var(--text-primary)" : "var(--text-muted)";
+    document.getElementById("meter-fill").style.width = (stats.match_rate_pct || 0) + "%";
+    document.getElementById("meter-fill").style.background = sev.color;
+    document.getElementById("hero-sub").textContent = stats.total
+      ? `${stats.success} of ${stats.total} shadow comparisons matched (± tolerance) — ${sev.label}`
+      : "No shadow comparisons recorded yet.";
+  }
+
+  function renderTrend(historyDesc) {
+    const svg = document.getElementById("trend-svg");
+    if (!historyDesc.length) {
+      svg.innerHTML = `<text x="300" y="90" text-anchor="middle" fill="var(--text-muted)" font-size="13">No data yet</text>`;
+      lastPoints = [];
+      return;
+    }
+    const asc = [...historyDesc].reverse();
+    let matches = 0;
+    const points = asc.map((row, i) => {
+      if (row.status === "success") matches++;
+      return { x: i, pct: (matches / (i + 1)) * 100, row };
+    });
+    lastPoints = points;
+
+    const W = 600, H = 180, PAD = 8;
+    const n = points.length;
+    const xFor = i => n <= 1 ? W / 2 : PAD + (i / (n - 1)) * (W - 2 * PAD);
+    const yFor = pct => H - PAD - (pct / 100) * (H - 2 * PAD);
+
+    const path = points.map((p, i) => `${i === 0 ? "M" : "L"} ${xFor(i).toFixed(1)} ${yFor(p.pct).toFixed(1)}`).join(" ");
+    const gridLines = [0, 50, 100].map(v => `
+      <line x1="0" y1="${yFor(v)}" x2="${W}" y2="${yFor(v)}" stroke="var(--gridline)" stroke-width="1" />
+      <text x="0" y="${yFor(v) - 4}" fill="var(--text-muted)" font-size="10">${v}%</text>
+    `).join("");
+    const last = points[points.length - 1];
+
+    svg.innerHTML = `
+      ${gridLines}
+      <path d="${path}" fill="none" stroke="var(--series-1)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+      <circle cx="${xFor(n - 1)}" cy="${yFor(last.pct)}" r="4" fill="var(--series-1)" stroke="var(--surface-1)" stroke-width="2" />
+      <rect id="hover-capture" x="0" y="0" width="${W}" height="${H}" fill="transparent" />
+      <circle id="hover-dot" r="4" fill="var(--series-1)" stroke="var(--surface-1)" stroke-width="2" style="display:none" />
+    `;
+
+    const capture = document.getElementById("hover-capture");
+    const hoverDot = document.getElementById("hover-dot");
+    const tooltip = document.getElementById("tooltip");
+    capture.addEventListener("mousemove", (e) => {
+      const rect = svg.getBoundingClientRect();
+      const relX = ((e.clientX - rect.left) / rect.width) * W;
+      let nearest = 0, bestDist = Infinity;
+      points.forEach((p, i) => {
+        const d = Math.abs(xFor(i) - relX);
+        if (d < bestDist) { bestDist = d; nearest = i; }
+      });
+      const p = points[nearest];
+      hoverDot.style.display = "block";
+      hoverDot.setAttribute("cx", xFor(nearest));
+      hoverDot.setAttribute("cy", yFor(p.pct));
+      const svgRect = svg.getBoundingClientRect();
+      tooltip.style.left = (svgRect.left - svg.parentElement.getBoundingClientRect().left + (xFor(nearest) / W) * svgRect.width) + "px";
+      tooltip.style.top = (svgRect.top - svg.parentElement.getBoundingClientRect().top + (yFor(p.pct) / H) * svgRect.height) + "px";
+      tooltip.style.opacity = "1";
+      tooltip.innerHTML = `#${nearest + 1} — ${p.pct.toFixed(1)}% cumulative<br>${statusPill(p.row.status)} · ${fmtMoney(p.row.loan_amount)} @ ${p.row.interest_rate}%`;
+    });
+    capture.addEventListener("mouseleave", () => {
+      hoverDot.style.display = "none";
+      tooltip.style.opacity = "0";
+    });
+  }
+
+  function renderTable(historyDesc) {
+    const container = document.getElementById("table-container");
+    if (!historyDesc.length) {
+      container.innerHTML = `<div class="empty-state">Send a request to <code>/calculate-interest</code> to see activity here.</div>`;
+      return;
+    }
+    const rows = historyDesc.slice(0, 20).map(r => `
+      <tr>
+        <td>${fmtTime(r.ts)}</td>
+        <td>${fmtMoney(r.loan_amount)}</td>
+        <td>${r.interest_rate}%</td>
+        <td>${r.legacy_result === null ? "—" : fmtMoney(r.legacy_result)}</td>
+        <td>${r.shadow_result === null ? "—" : fmtMoney(r.shadow_result)}</td>
+        <td>${r.diff === null ? "—" : r.diff.toFixed(4)}</td>
+        <td>${statusPill(r.status)}</td>
+      </tr>
+    `).join("");
+    container.innerHTML = `
+      <table>
+        <thead><tr>
+          <th>Time</th><th>Loan</th><th>Rate</th><th>Legacy</th><th>Shadow</th><th>Diff</th><th>Status</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+  }
+
+  async function refresh() {
+    try {
+      const stats = await authedFetch("/shadow-stats");
+      const history = await authedFetch(`/shadow-history?limit=${HISTORY_LIMIT}`);
+      renderHero(stats);
+      renderKpis(stats);
+      renderTrend(history);
+      renderTable(history);
+    } catch (e) {
+      if (e.unauthorized) {
+        document.getElementById("gate-error").textContent = "Invalid API key.";
+        changeKey();
+      }
+    }
+  }
+
+  function boot() {
+    document.getElementById("gate").style.display = "none";
+    document.getElementById("dashboard").style.display = "block";
+    refresh();
+    refreshTimer = setInterval(refresh, 5000);
+  }
+
+  if (getKey()) { boot(); } else { document.getElementById("gate").style.display = "block"; }
+</script>

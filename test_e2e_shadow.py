@@ -24,6 +24,9 @@ PORT = 8199
 BASE_URL = f"http://{HOST}:{PORT}"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
+TEST_API_KEY = "e2e-test-key-do-not-use-in-prod"
+AUTH_HEADERS = {"X-API-Key": TEST_API_KEY}
+
 FUZZ_SEED = 42
 FUZZ_ITERATIONS = 40
 
@@ -93,11 +96,13 @@ def main() -> int:
         os.remove(db_path)
 
     print(f"Launching uvicorn server on {BASE_URL} ...")
+    env = {**os.environ, "SHADOW_RUNNER_API_KEY": TEST_API_KEY}
     server_proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "main:app", "--host", HOST, "--port", str(PORT)],
         cwd=SCRIPT_DIR,
         stdout=log_file,
         stderr=subprocess.STDOUT,
+        env=env,
     )
 
     results = []
@@ -111,7 +116,7 @@ def main() -> int:
 
         for payload in TEST_PAYLOADS:
             body = {"loan_amount": payload["loan_amount"], "interest_rate": payload["interest_rate"]}
-            resp = requests.post(f"{BASE_URL}/calculate-interest", json=body, timeout=5)
+            resp = requests.post(f"{BASE_URL}/calculate-interest", json=body, headers=AUTH_HEADERS, timeout=5)
             ok = resp.status_code == 200
             result_value = resp.json().get("result") if ok else None
             results.append({"name": payload["name"], "request": body, "status": resp.status_code, "result": result_value})
@@ -121,7 +126,7 @@ def main() -> int:
         print(f"\nFuzzing with {len(fuzz_payloads)} randomized valid payloads (seed={FUZZ_SEED})...")
         for payload in fuzz_payloads:
             body = {"loan_amount": payload["loan_amount"], "interest_rate": payload["interest_rate"]}
-            resp = requests.post(f"{BASE_URL}/calculate-interest", json=body, timeout=5)
+            resp = requests.post(f"{BASE_URL}/calculate-interest", json=body, headers=AUTH_HEADERS, timeout=5)
             ok = resp.status_code == 200
             result_value = resp.json().get("result") if ok else None
             results.append({"name": payload["name"], "request": body, "status": resp.status_code, "result": result_value})
@@ -130,16 +135,26 @@ def main() -> int:
         print(f"\nProbing {len(MALFORMED_PAYLOADS)} malformed payloads (must be rejected before reaching either engine)...")
         for payload in MALFORMED_PAYLOADS:
             body = {k: v for k, v in payload.items() if k != "name"}
-            resp = requests.post(f"{BASE_URL}/calculate-interest", json=body, timeout=5)
+            resp = requests.post(f"{BASE_URL}/calculate-interest", json=body, headers=AUTH_HEADERS, timeout=5)
             rejected = 400 <= resp.status_code < 500
             malformed_results.append({"name": payload["name"], "status": resp.status_code, "rejected": rejected})
             print(f"  [{payload['name']}] -> HTTP {resp.status_code} ({'rejected as expected' if rejected else 'NOT REJECTED'})")
+
+        print("\nProbing auth: request with no API key and request with wrong API key must both be rejected...")
+        no_key_resp = requests.post(f"{BASE_URL}/calculate-interest", json={"loan_amount": 100.0, "interest_rate": 5.0}, timeout=5)
+        wrong_key_resp = requests.post(
+            f"{BASE_URL}/calculate-interest", json={"loan_amount": 100.0, "interest_rate": 5.0},
+            headers={"X-API-Key": "wrong-key"}, timeout=5,
+        )
+        auth_rejected = no_key_resp.status_code == 401 and wrong_key_resp.status_code == 401
+        print(f"  [no_api_key] -> HTTP {no_key_resp.status_code}")
+        print(f"  [wrong_api_key] -> HTTP {wrong_key_resp.status_code}")
 
         # Give the BackgroundTasks (shadow comparisons) time to run, flush logs,
         # and persist to shadow_results.db.
         time.sleep(3)
 
-        stats_resp = requests.get(f"{BASE_URL}/shadow-stats", timeout=5)
+        stats_resp = requests.get(f"{BASE_URL}/shadow-stats", headers=AUTH_HEADERS, timeout=5)
         shadow_stats = stats_resp.json() if stats_resp.status_code == 200 else None
 
     finally:
@@ -165,6 +180,7 @@ def main() -> int:
     print("=" * 60)
     print(f"  Fixed + fuzz requests sent:      {len(results)}")
     print(f"  Malformed requests sent:         {len(malformed_results)}")
+    print(f"  Auth correctly rejected:         {auth_rejected}")
     print("-" * 60)
     print(f"  [SHADOW SUCCESS] markers found:  {shadow_success_count}")
     print(f"  [SHADOW MISMATCH] markers found: {shadow_mismatch_count}")
@@ -198,10 +214,11 @@ def main() -> int:
         and shadow_stats["error"] == 0
     )
 
-    if all_valid_requests_ok and all_malformed_rejected and shadow_validated and persisted_matches_log:
+    if all_valid_requests_ok and all_malformed_rejected and shadow_validated and persisted_matches_log and auth_rejected:
         print("\nRESULT: PASS - Shadow Runner validated all outputs successfully "
               f"across {len(results)} valid requests ({FUZZ_ITERATIONS} fuzzed), "
               f"correctly rejected all {len(malformed_results)} malformed inputs, "
+              f"correctly rejected unauthenticated/wrong-key requests, "
               f"and persisted a {shadow_stats['match_rate_pct']}% match rate to shadow_results.db.")
         return 0
     else:
@@ -214,6 +231,8 @@ def main() -> int:
             print("  -> shadow comparator reported a mismatch or error")
         if not persisted_matches_log:
             print("  -> persisted shadow_results.db stats did not match expected counts")
+        if not auth_rejected:
+            print("  -> unauthenticated or wrong-key request was NOT rejected with 401")
         print(log_contents)
         return 1
 

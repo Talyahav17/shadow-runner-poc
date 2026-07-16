@@ -103,13 +103,37 @@ Beyond the log lines, every comparison is persisted, so match-rate is
 queryable at any time — not just at demo time:
 
 ```bash
-curl http://localhost:8000/shadow-stats
+curl -H "X-API-Key: <your-key>" http://localhost:8000/shadow-stats
 # {"total": 45, "success": 45, "mismatch": 0, "error": 0, "match_rate_pct": 100.0}
 ```
 
 In a real rollout, this is the metric that justifies the cutover decision:
 run the shadow path against live traffic for days or weeks, then promote
 the modern path only once the match rate is provably high enough.
+
+## Dashboard
+
+`GET /dashboard` (no key required to load the page itself) serves a
+client-facing view of the same data: a hero match-rate figure, a
+severity-colored meter (green ≥99%, amber 95–99%, red below), KPI tiles for
+total/success/mismatch/error, a cumulative-match-rate trend line with
+hover detail, and a recent-activity table that doubles as the trend
+chart's accessible table view. It prompts for the API key once (stored in
+the browser, never embedded in the page) and auto-refreshes every 5
+seconds.
+
+## Authentication
+
+Every endpoint except `/health` and the `/dashboard` shell requires an
+`X-API-Key` header. If `SHADOW_RUNNER_API_KEY` isn't set, the service
+generates a random key on startup and logs it once:
+
+```
+WARNING SHADOW_RUNNER_API_KEY not set -- generated a random key for this run. API key: <...>
+```
+
+Set the env var (e.g. via `docker compose` or your secrets manager) to pin
+a fixed key across restarts instead.
 
 ---
 
@@ -126,19 +150,34 @@ service in one container.
 docker compose up --build
 ```
 
-Then, in another terminal:
+The generated API key is printed in the startup logs (`docker compose logs`)
+— copy it, then, in another terminal:
 
 ```bash
 curl -X POST localhost:8000/calculate-interest \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: <key from the logs>" \
   -d '{"loan_amount": 1000.00, "interest_rate": 5.00}'
 
-curl localhost:8000/shadow-stats
+curl -H "X-API-Key: <key from the logs>" localhost:8000/shadow-stats
 ```
+
+Or just open [localhost:8000/dashboard](http://localhost:8000/dashboard) and
+paste the key in when prompted.
 
 Match-rate history is written to a named Docker volume (`shadow_data`), so
 it survives `docker compose restart` — only `docker compose down -v` wipes
 it. Stop the service with `docker compose down`.
+
+To pin a fixed key instead of a random one each run, set it in
+`docker-compose.yml`:
+
+```yaml
+services:
+  shadow-runner:
+    environment:
+      - SHADOW_RUNNER_API_KEY=your-fixed-key-here
+```
 
 ### Option B — Native (for development on this codebase)
 
@@ -156,9 +195,11 @@ python3 -m pytest test_modern_logic.py -v
 python3 test_e2e_shadow.py
 
 # 5. Or run the service directly and try it live
-python3 -m uvicorn main:app --reload
+#    (set SHADOW_RUNNER_API_KEY, or use the random one printed on startup)
+SHADOW_RUNNER_API_KEY=dev-key python3 -m uvicorn main:app --reload
 curl -X POST localhost:8000/calculate-interest \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: dev-key" \
   -d '{"loan_amount": 1000.00, "interest_rate": 5.00}'
 ```
 
@@ -168,9 +209,28 @@ curl -X POST localhost:8000/calculate-interest \
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push
 and pull request: it compiles the COBOL routine, runs the unit test suite,
-runs the full end-to-end + fuzz verification, and separately builds and
-smoke-tests the Docker image. Push this repo to GitHub and it runs
-automatically — no setup needed.
+runs the full end-to-end + fuzz verification, scans pinned dependencies for
+known CVEs (`pip-audit`), and separately builds and smoke-tests the Docker
+image. Push this repo to GitHub and it runs automatically — no setup needed.
+
+---
+
+## Security
+
+- **Auth**: every endpoint except `/health` and the `/dashboard` shell
+  requires `X-API-Key`, checked with a timing-safe comparison
+  (`secrets.compare_digest`). A random key is generated and logged once if
+  `SHADOW_RUNNER_API_KEY` isn't set.
+- **Container**: runs as an unprivileged user (not root); the base image is
+  pinned by digest, not just the `3.12-slim` tag, for reproducible builds.
+- **Dependencies**: pinned in `requirements.txt` and scanned by `pip-audit`
+  in CI on every push.
+- **Input validation**: `loan_amount` / `interest_rate` are bounds-checked
+  by Pydantic before either engine ever sees them; SQL access is fully
+  parameterized (no string-built queries).
+- **Dashboard**: the API key lives in `sessionStorage` (cleared when the
+  tab closes) rather than `localStorage`, and nothing user-controlled is
+  ever written into the page unescaped.
 
 ---
 

@@ -31,6 +31,21 @@ jobs:
       - name: Run end-to-end + fuzz/soak verification
         run: python test_e2e_shadow.py
 
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Scan pinned dependencies for known vulnerabilities
+        run: pip-audit -r requirements.txt
+
   docker-build:
     runs-on: ubuntu-latest
     steps:
@@ -41,20 +56,33 @@ jobs:
 
       - name: Smoke test the container
         run: |
-          docker run -d -p 8000:8000 --name shadow-runner-ci shadow-runner:ci
+          docker run -d -p 8000:8000 -e SHADOW_RUNNER_API_KEY=ci-smoke-test-key --name shadow-runner-ci shadow-runner:ci
           for i in $(seq 1 20); do
             curl -sf http://localhost:8000/health && break
             sleep 1
           done
           curl -sf http://localhost:8000/health
           echo
+          curl -sf http://localhost:8000/dashboard > /dev/null
+          echo "dashboard OK"
           curl -sf -X POST http://localhost:8000/calculate-interest \
             -H "Content-Type: application/json" \
+            -H "X-API-Key: ci-smoke-test-key" \
             -d '{"loan_amount": 1000.00, "interest_rate": 5.00}'
           echo
           sleep 2
-          curl -sf http://localhost:8000/shadow-stats
+          curl -sf -H "X-API-Key: ci-smoke-test-key" http://localhost:8000/shadow-stats
           echo
+          curl -sf -H "X-API-Key: ci-smoke-test-key" "http://localhost:8000/shadow-history?limit=5"
+          echo
+          # Unauthenticated request must be rejected, not accepted.
+          http_status=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:8000/calculate-interest \
+            -H "Content-Type: application/json" -d '{"loan_amount": 1000.00, "interest_rate": 5.00}')
+          if [ "$http_status" != "401" ]; then
+            echo "expected 401 for unauthenticated request, got $http_status"
+            exit 1
+          fi
+          echo "auth rejection OK"
 
       - name: Container logs
         if: always()

@@ -36,6 +36,11 @@ def init_db(db_path: str = DB_PATH) -> None:
     os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
     conn = sqlite3.connect(db_path)
     try:
+        # WAL mode is a persistent property of the db file (set once here,
+        # not per-connection): it lets shadow-comparison writes and
+        # dashboard reads proceed concurrently instead of blocking on the
+        # single-writer lock plain SQLite uses by default.
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(_SCHEMA)
         conn.commit()
     finally:
@@ -85,3 +90,20 @@ def get_match_stats(db_path: str = DB_PATH) -> dict:
         "error": counts.get("error", 0),
         "match_rate_pct": round(match_rate, 2) if match_rate is not None else None,
     }
+
+
+def get_recent_results(limit: int = 50, db_path: str = DB_PATH) -> list:
+    """Most recent comparisons, newest first -- powers the dashboard's
+    trend chart and recent-activity table."""
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute(
+            "SELECT ts, loan_amount, interest_rate, legacy_result, shadow_result, diff, status, detail "
+            "FROM shadow_results ORDER BY id DESC LIMIT ?",
+            (limit,),
+        )
+        rows = [dict(row) for row in cur.fetchall()]
+    finally:
+        conn.close()
+    return rows

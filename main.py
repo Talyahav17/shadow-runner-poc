@@ -12,9 +12,11 @@ to callers before it is ever promoted to production.
 import ctypes
 import logging
 import os
+import secrets
 import sys
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 import shadow_store
@@ -38,6 +40,23 @@ logging.basicConfig(
 logger = logging.getLogger("shadow_runner")
 
 MISMATCH_TOLERANCE = 0.001
+
+# Secure by default: if the operator doesn't pin SHADOW_RUNNER_API_KEY, a
+# random key is generated for this run and logged once, so the service is
+# never silently open. Set the env var to a fixed value for repeat access
+# (e.g. from the client's own secrets manager).
+API_KEY = os.environ.get("SHADOW_RUNNER_API_KEY")
+if not API_KEY:
+    API_KEY = secrets.token_urlsafe(24)
+    logger.warning(
+        "SHADOW_RUNNER_API_KEY not set -- generated a random key for this run. "
+        "Set the env var to pin it across restarts. API key: %s", API_KEY,
+    )
+
+
+def require_api_key(x_api_key: str = Header(default=None, alias="X-API-Key")) -> None:
+    if not x_api_key or not secrets.compare_digest(x_api_key, API_KEY):
+        raise HTTPException(status_code=401, detail="Missing or invalid X-API-Key header")
 
 
 class CobolLibraryError(RuntimeError):
@@ -178,7 +197,7 @@ def _run_shadow_comparison(loan_amount: float, interest_rate: float, legacy_resu
         )
 
 
-@app.post("/calculate-interest", response_model=InterestResponse)
+@app.post("/calculate-interest", response_model=InterestResponse, dependencies=[Depends(require_api_key)])
 def calculate_interest(request: InterestRequest, background_tasks: BackgroundTasks):
     # 0. Canonicalize to the legacy field precision *before* either engine
     #    runs, so both see identical inputs -- not the caller's raw floats,
@@ -207,7 +226,21 @@ def health():
     return {"status": "ok"}
 
 
-@app.get("/shadow-stats")
+@app.get("/shadow-stats", dependencies=[Depends(require_api_key)])
 def shadow_stats():
     """Aggregate match-rate across every shadow comparison recorded so far."""
     return shadow_store.get_match_stats()
+
+
+@app.get("/shadow-history", dependencies=[Depends(require_api_key)])
+def shadow_history(limit: int = Query(default=50, ge=1, le=500)):
+    """Most recent shadow comparisons, newest first."""
+    return shadow_store.get_recent_results(limit=limit)
+
+
+@app.get("/dashboard")
+def dashboard():
+    """Client-facing match-rate dashboard. Static shell; it prompts for the
+    API key client-side and uses it to call /shadow-stats and
+    /shadow-history, so the page itself carries no secret."""
+    return FileResponse(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "dashboard.html"))
