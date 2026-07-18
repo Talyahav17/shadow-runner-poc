@@ -31,6 +31,9 @@ jobs:
       - name: Run end-to-end + fuzz/soak verification
         run: python test_e2e_shadow.py
 
+      - name: Run concurrency stress test
+        run: python test_concurrency_stress.py
+
   dependency-audit:
     runs-on: ubuntu-latest
     steps:

@@ -14,6 +14,7 @@ import logging
 import os
 import secrets
 import sys
+import threading
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -102,7 +103,19 @@ def _canonicalize_to_field_precision(value: float, dec_digits: int) -> float:
 
 
 class CobolInterestCalculator:
-    """ctypes wrapper around the compiled interest_calc.so module."""
+    """ctypes wrapper around the compiled interest_calc.so module.
+
+    interest_calc.cbl declares PROGRAM-ID INTEREST-CALC without RECURSIVE,
+    so GnuCOBOL gives it a single process-global WORKING-STORAGE instance
+    shared by every call -- concurrent calls from FastAPI's threadpool
+    crash the whole process (libcob detects the reentrant call and aborts:
+    "recursive CALL from 'INTEREST-CALC' to 'INTEREST-CALC' which is NOT
+    RECURSIVE"). A real migration usually can't recompile or touch the
+    legacy binary at all, so the fix belongs here, not in the .cbl: a lock
+    serializes every call into the library, trading COBOL-call throughput
+    for correctness -- exactly the assumption you'd make fronting any
+    opaque legacy system whose internal thread-safety is unknown.
+    """
 
     def __init__(self, lib_path: str):
         if not os.path.exists(lib_path):
@@ -115,6 +128,7 @@ class CobolInterestCalculator:
         self._lib.cob_init(0, None)
         self._entry_point = self._lib.INTEREST__CALC
         self._entry_point.restype = ctypes.c_int
+        self._lock = threading.Lock()
 
     def calculate(self, loan_amount: float, interest_rate: float) -> float:
         loan_buf = ctypes.create_string_buffer(
@@ -129,11 +143,11 @@ class CobolInterestCalculator:
             RESULT_INT_DIGITS + RESULT_DEC_DIGITS
         )
 
-        ret_code = self._entry_point(loan_buf, rate_buf, result_buf)
-        if ret_code != 0:
-            raise CobolLibraryError(f"interest_calc.so returned non-zero status {ret_code}")
-
-        return _decode_fixed_point(result_buf.raw, RESULT_INT_DIGITS, RESULT_DEC_DIGITS)
+        with self._lock:
+            ret_code = self._entry_point(loan_buf, rate_buf, result_buf)
+            if ret_code != 0:
+                raise CobolLibraryError(f"interest_calc.so returned non-zero status {ret_code}")
+            return _decode_fixed_point(result_buf.raw, RESULT_INT_DIGITS, RESULT_DEC_DIGITS)
 
 
 LIB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "interest_calc.so")
