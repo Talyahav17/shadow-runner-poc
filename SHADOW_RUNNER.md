@@ -56,6 +56,8 @@ data before it's ever trusted to go live.
 | Results store | [`shadow_store.py`](shadow_store.py) | SQLite log of every comparison — inputs, both outputs, diff, match/mismatch |
 | Unit tests | [`test_modern_logic.py`](test_modern_logic.py) | 17 cases: happy path, zero values, field-capacity boundaries, invalid input |
 | Verification harness | [`test_e2e_shadow.py`](test_e2e_shadow.py) | Boots the real service, fires fixed + randomized + malformed traffic, proves the shadow comparator works end to end |
+| Concurrency stress test | [`test_concurrency_stress.py`](test_concurrency_stress.py) | Fires hundreds of concurrent requests to prove the service holds up under real load |
+| AI migration pipeline | [`migrate.py`](migrate.py), [`migration/`](migration/) | Actor/Critic loop that generates and empirically validates a candidate `modern_logic.py` — see below |
 
 ---
 
@@ -251,6 +253,54 @@ runs the full end-to-end + fuzz verification, runs the concurrency stress
 test, scans pinned dependencies for known CVEs (`pip-audit`), and
 separately builds and smoke-tests the Docker image. Push this repo to
 GitHub and it runs automatically — no setup needed.
+
+---
+
+## AI Actor/Critic Migration Pipeline
+
+[`modern_logic.py`](modern_logic.py) was written by hand for this PoC. But
+the same Shadow Runner infrastructure that validates it can also be used
+to *generate* it: [`migrate.py`](migrate.py) drives an AI Actor/Critic
+loop, mirroring the pattern the (separate, unrelated) `secure-auditor` CLI
+in this repo already uses — but grounding the Critic in real measurement
+instead of just code review:
+
+1. **Actor** (Claude) reads the COBOL source and proposes a Python
+   translation.
+2. The candidate is run **directly against the real compiled COBOL**
+   across hundreds of fuzzed inputs — no LLM involved in this step, the
+   same empirical approach as `test_e2e_shadow.py`'s fuzzing.
+3. **Critic** (Claude) reviews the candidate together with that empirical
+   evidence — the actual match rate and concrete failing cases — and
+   either **APPROVEs** it or **REVISEs** with feedback tied to specific
+   failures, which feeds back into another Actor attempt.
+
+The loop stops once the Critic approves at or above `--match-threshold`
+(default 100%) or `--max-iterations` is reached.
+
+```bash
+pip install -r requirements-migration.txt   # separate from the app's own deps
+export ANTHROPIC_API_KEY=...                # set in your own shell, never entered interactively
+python3 migrate.py --cobol interest_calc.cbl
+```
+
+Try it with `--dry-run` first — a stub LLM (no API calls, no cost) walks
+through a full two-round loop, including a deliberate REVISE, so you can
+see the mechanics before spending real API credits:
+
+```bash
+python3 migrate.py --dry-run
+```
+
+Each run writes every candidate (`migration_output/candidate_vN.py`), the
+final approved code (`migration_output/approved_modern_logic.py`), and a
+full iteration history (`migration_output/report.json`) — all gitignored,
+since they're generated output, not source.
+
+**Safety note**: this tool executes LLM-generated code locally via
+`exec()` in order to test it — that's inherent to the tool's purpose (it
+has to run to be compared against the COBOL output), so only point it at
+COBOL sources you're comfortable generating and running code for.
 
 ---
 

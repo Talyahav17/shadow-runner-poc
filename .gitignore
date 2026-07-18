@@ -8,3 +8,4 @@ __pycache__/
 *.dll
 shadow_results.db
 .env
+migration_output/

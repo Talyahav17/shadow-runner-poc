@@ -34,6 +34,9 @@ jobs:
       - name: Run concurrency stress test
         run: python test_concurrency_stress.py
 
+      - name: Dry-run the AI migration pipeline mechanics (no API key, no cost)
+        run: python migrate.py --dry-run
+
   dependency-audit:
     runs-on: ubuntu-latest
     steps:
