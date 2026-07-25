@@ -58,6 +58,7 @@ data before it's ever trusted to go live.
 | Verification harness | [`test_e2e_shadow.py`](test_e2e_shadow.py) | Boots the real service, fires fixed + randomized + malformed traffic, proves the shadow comparator works end to end |
 | Concurrency stress test | [`test_concurrency_stress.py`](test_concurrency_stress.py) | Fires hundreds of concurrent requests to prove the service holds up under real load |
 | AI migration pipeline | [`migrate.py`](migrate.py), [`migration/`](migration/) | Actor/Critic loop that generates and empirically validates a candidate `modern_logic.py` — see below |
+| Migration progress store | [`migration_store.py`](migration_store.py) | SQLite log of registered programs and their iteration history — powers the migration dashboard |
 
 ---
 
@@ -301,6 +302,34 @@ since they're generated output, not source.
 `exec()` in order to test it — that's inherent to the tool's purpose (it
 has to run to be compared against the COBOL output), so only point it at
 COBOL sources you're comfortable generating and running code for.
+
+### Migration Progress Dashboard
+
+Every `migrate.py` run is recorded in `migration_results.db`
+([`migration_store.py`](migration_store.py)) — which programs are
+registered, their status (`pending` / `in_progress` / `approved` /
+`failed`), and the full per-iteration match-rate history — so progress is
+queryable across separate runs, not just visible in that run's terminal
+output. `GET /migration-dashboard` (same API key as the Shadow Runner
+dashboard) shows:
+
+- **How many programs are done vs. still pending** — a hero "X / Y
+  programs migrated" figure and a status breakdown (approved / in
+  progress / pending / failed).
+- **Aggregate stats** — average iterations to approval, total iterations
+  run across every program.
+- **Per-program match-rate trend** — pick a program from the dropdown to
+  see its match rate climb iteration by iteration, with hover detail
+  showing each iteration's Critic verdict and feedback.
+- **A registered-programs table** — status, iteration count, latest match
+  rate, last run time — doubling as the trend chart's accessible table
+  view.
+
+Today there's exactly one registered program (`interest_calc`), since
+that's the only legacy COBOL source in this repo — but the registry and
+dashboard are built to scale as more are migrated: point `migrate.py
+--cobol <new_program.cbl>` at another legacy source and it registers
+itself automatically.
 
 ---
 

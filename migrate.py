@@ -14,6 +14,12 @@ by main.py's CobolInterestCalculator), this drives an iterative loop:
 Stops once the Critic approves and the empirical match rate clears
 --match-threshold, or --max-iterations is reached.
 
+Every run is recorded in migration_results.db (migration_store.py) --
+the program's status (pending/in_progress/approved/failed) and each
+iteration's match rate -- so progress across runs is queryable via
+main.py's GET /migration-dashboard, not just visible in this terminal
+output.
+
 Requires ANTHROPIC_API_KEY for real runs (never entered interactively --
 export it in your own shell). Use --dry-run to exercise the pipeline
 mechanics with a stub LLM: no network calls, no cost, and it deliberately
@@ -40,6 +46,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 # and doesn't need auth, so pin a throwaway value to keep output clean.
 os.environ.setdefault("SHADOW_RUNNER_API_KEY", "migration-tool-internal-unused")
 
+import migration_store  # noqa: E402
 from migration import actor, critic, llm_client  # noqa: E402
 
 
@@ -55,10 +62,8 @@ def load_candidate_function(code: str):
 def make_stub_llm():
     """A deterministic fake LLM for --dry-run: exercises the full loop
     (including a revision round) without any network access or cost."""
-    calls = {"n": 0}
 
     def stub(prompt: str) -> str:
-        calls["n"] += 1
         if "Respond with ONLY a JSON object" in prompt:
             # This is a verdict request. Approve once the prompt shows the
             # (deliberately fixed) second-draft candidate was used.
@@ -100,35 +105,8 @@ def run_modern_logic(loan: float, rate: float) -> float:
     return stub
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--cobol", default="interest_calc.cbl", help="Path to the COBOL source to migrate")
-    parser.add_argument("--model", default=llm_client.DEFAULT_MODEL, help="Claude model for Actor and Critic")
-    parser.add_argument("--max-iterations", type=int, default=5)
-    parser.add_argument("--match-threshold", type=float, default=100.0, help="Minimum empirical match %% to accept an APPROVE verdict")
-    parser.add_argument("--fuzz-cases", type=int, default=300, help="Number of random inputs per empirical comparison")
-    parser.add_argument("--output-dir", default="migration_output")
-    parser.add_argument("--dry-run", action="store_true", help="Use a stub LLM -- no API calls, no cost, exercises the pipeline mechanics only")
-    args = parser.parse_args()
-
-    cobol_path = Path(args.cobol)
-    if not cobol_path.exists():
-        print(f"COBOL source not found: {cobol_path}", file=sys.stderr)
-        return 1
-    cobol_source = cobol_path.read_text()
-
-    import main as shadow_main  # local import: needs interest_calc.so already compiled
-
-    if args.dry_run:
-        print("--dry-run: using a stub LLM. No API calls, no cost.\n")
-        call_llm = make_stub_llm()
-    else:
-        client = llm_client.get_client()
-        call_llm = lambda prompt: llm_client.call_llm(client, prompt, model=args.model)
-
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(exist_ok=True)
-
+def run_migration_loop(args, cobol_source: str, call_llm, output_dir: Path, shadow_main, program_id: int, run_id: str):
+    """Runs the Actor -> empirical test -> Critic loop. Returns (approved, history)."""
     candidate_code = None
     critic_feedback = None
     failures = None
@@ -159,7 +137,10 @@ def main() -> int:
                 seed=42 + iteration,
             )
         except Exception as exc:
-            empirical = {"total": 0, "matches": 0, "match_rate_pct": 0.0, "failure_count": 1, "failures": [{"error": f"candidate failed to load: {exc!r}"}]}
+            empirical = {
+                "total": 0, "matches": 0, "match_rate_pct": 0.0,
+                "failure_count": 1, "failures": [{"error": f"candidate failed to load: {exc!r}"}],
+            }
 
         print(f"  match rate: {empirical['match_rate_pct']}% ({empirical['matches']}/{empirical['total']}), "
               f"failures: {empirical['failure_count']}")
@@ -175,6 +156,11 @@ def main() -> int:
             "verdict": verdict["verdict"],
             "feedback": verdict["feedback"],
         })
+        migration_store.record_iteration(
+            program_id, run_id, iteration,
+            empirical["match_rate_pct"], empirical["total"], empirical["failure_count"],
+            verdict["verdict"], verdict["feedback"],
+        )
 
         if verdict["verdict"] == "APPROVE" and empirical["match_rate_pct"] >= args.match_threshold:
             approved = True
@@ -186,6 +172,52 @@ def main() -> int:
         critic_feedback = verdict["feedback"]
         failures = empirical["failures"]
         print()
+
+    return approved, history
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--cobol", default="interest_calc.cbl", help="Path to the COBOL source to migrate")
+    parser.add_argument("--model", default=llm_client.DEFAULT_MODEL, help="Claude model for Actor and Critic")
+    parser.add_argument("--max-iterations", type=int, default=5)
+    parser.add_argument("--match-threshold", type=float, default=100.0, help="Minimum empirical match %% to accept an APPROVE verdict")
+    parser.add_argument("--fuzz-cases", type=int, default=300, help="Number of random inputs per empirical comparison")
+    parser.add_argument("--output-dir", default="migration_output")
+    parser.add_argument("--dry-run", action="store_true", help="Use a stub LLM -- no API calls, no cost, exercises the pipeline mechanics only")
+    args = parser.parse_args()
+
+    cobol_path = Path(args.cobol)
+    if not cobol_path.exists():
+        print(f"COBOL source not found: {cobol_path}", file=sys.stderr)
+        return 1
+    cobol_source = cobol_path.read_text()
+
+    import main as shadow_main  # local import: needs interest_calc.so already compiled
+
+    if args.dry_run:
+        print("--dry-run: using a stub LLM. No API calls, no cost.\n")
+        call_llm = make_stub_llm()
+    else:
+        client = llm_client.get_client()
+        call_llm = lambda prompt: llm_client.call_llm(client, prompt, model=args.model)
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(exist_ok=True)
+
+    migration_store.init_db()
+    program_name = cobol_path.stem
+    program_id = migration_store.register_program(program_name, str(cobol_path))
+    run_id = migration_store.start_run(program_id)
+
+    approved = False
+    history = []
+    try:
+        approved, history = run_migration_loop(args, cobol_source, call_llm, output_dir, shadow_main, program_id, run_id)
+    finally:
+        # Runs even if the loop raised, so a crash mid-run shows as
+        # "failed" on the dashboard rather than stuck on "in_progress".
+        migration_store.finish_run(program_id, approved)
 
     report_path = output_dir / "report.json"
     report_path.write_text(json.dumps({"cobol_source": str(cobol_path), "approved": approved, "iterations": history}, indent=2))
