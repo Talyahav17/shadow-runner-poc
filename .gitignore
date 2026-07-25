@@ -7,5 +7,6 @@ __pycache__/
 *.dylib
 *.dll
 shadow_results.db
+migration_results.db
 .env
 migration_output/

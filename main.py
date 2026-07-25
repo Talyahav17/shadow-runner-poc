@@ -20,6 +20,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Qu
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+import migration_store
 import shadow_store
 from field_specs import (
     LOAN_INT_DIGITS,
@@ -153,6 +154,7 @@ class CobolInterestCalculator:
 LIB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "interest_calc.so")
 cobol_calculator = CobolInterestCalculator(LIB_PATH)
 shadow_store.init_db()
+migration_store.init_db()
 
 app = FastAPI(title="Shadow Runner - Interest Calculation Proxy")
 
@@ -258,3 +260,24 @@ def dashboard():
     API key client-side and uses it to call /shadow-stats and
     /shadow-history, so the page itself carries no secret."""
     return FileResponse(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "dashboard.html"))
+
+
+@app.get("/migration-stats", dependencies=[Depends(require_api_key)])
+def migration_stats():
+    """Progress across every legacy program registered with migrate.py:
+    how many are pending/in_progress/approved/failed, plus per-program
+    latest status and iteration count."""
+    return migration_store.get_stats()
+
+
+@app.get("/migration-history", dependencies=[Depends(require_api_key)])
+def migration_history(program: str, limit: int = Query(default=100, ge=1, le=500)):
+    """Full iteration history for one registered program, most recent first."""
+    return migration_store.get_program_history(program, limit=limit)
+
+
+@app.get("/migration-dashboard")
+def migration_dashboard():
+    """Client-facing migration progress dashboard. Same pattern as
+    /dashboard: static shell, prompts for the API key client-side."""
+    return FileResponse(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "migration_dashboard.html"))

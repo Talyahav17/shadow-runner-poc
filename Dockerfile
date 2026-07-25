@@ -16,7 +16,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY interest_calc.cbl field_specs.py modern_logic.py shadow_store.py main.py ./
+COPY interest_calc.cbl field_specs.py modern_logic.py shadow_store.py migration_store.py main.py ./
 COPY static ./static
 
 RUN cobc -m -o interest_calc.so interest_calc.cbl
