@@ -22,8 +22,10 @@ jobs:
       - name: Install pinned Python dependencies
         run: pip install -r requirements.txt
 
-      - name: Compile the legacy COBOL routine
-        run: cobc -m -o interest_calc.so interest_calc.cbl
+      - name: Compile the legacy COBOL routines
+        run: |
+          cobc -m -o interest_calc.so interest_calc.cbl
+          cobc -m -o late_fee_calc.so late_fee_calc.cbl
 
       - name: Run modern_logic.py unit tests
         run: python -m pytest test_modern_logic.py -v
@@ -62,7 +64,9 @@ jobs:
 
       - name: Smoke test the container
         run: |
-          docker run -d -p 8000:8000 -e SHADOW_RUNNER_API_KEY=ci-smoke-test-key --name shadow-runner-ci shadow-runner:ci
+          docker run -d -p 8000:8000 \
+            -e SHADOW_RUNNER_API_KEYS="ci-admin-key:admin,ci-viewer-key:viewer" \
+            --name shadow-runner-ci shadow-runner:ci
           for i in $(seq 1 20); do
             curl -sf http://localhost:8000/health && break
             sleep 1
@@ -71,16 +75,45 @@ jobs:
           echo
           curl -sf http://localhost:8000/dashboard > /dev/null
           echo "dashboard OK"
+          curl -sf http://localhost:8000/migration-dashboard > /dev/null
+          echo "migration-dashboard OK"
+
+          # Registry: both programs.yaml entries must be live.
+          curl -sf -H "X-API-Key: ci-admin-key" http://localhost:8000/programs
+          echo
+
+          # Backward-compat alias.
           curl -sf -X POST http://localhost:8000/calculate-interest \
             -H "Content-Type: application/json" \
-            -H "X-API-Key: ci-smoke-test-key" \
+            -H "X-API-Key: ci-admin-key" \
             -d '{"loan_amount": 1000.00, "interest_rate": 5.00}'
           echo
+
+          # Generic multi-program endpoint -- the second, differently-shaped program.
+          curl -sf -X POST http://localhost:8000/programs/late_fee_calc/calculate \
+            -H "Content-Type: application/json" \
+            -H "X-API-Key: ci-admin-key" \
+            -d '{"inputs": {"balance": 1500.00, "penalty_rate": 2.50}}'
+          echo
           sleep 2
-          curl -sf -H "X-API-Key: ci-smoke-test-key" http://localhost:8000/shadow-stats
+
+          curl -sf -H "X-API-Key: ci-admin-key" http://localhost:8000/shadow-stats
           echo
-          curl -sf -H "X-API-Key: ci-smoke-test-key" "http://localhost:8000/shadow-history?limit=5"
+          curl -sf -H "X-API-Key: ci-admin-key" "http://localhost:8000/shadow-history?limit=5"
           echo
+
+          # RBAC: viewer can read but not write, and reads come back masked.
+          http_status=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:8000/calculate-interest \
+            -H "Content-Type: application/json" -H "X-API-Key: ci-viewer-key" \
+            -d '{"loan_amount": 1000.00, "interest_rate": 5.00}')
+          if [ "$http_status" != "403" ]; then
+            echo "expected 403 for viewer-role write, got $http_status"
+            exit 1
+          fi
+          echo "RBAC viewer-write rejection OK"
+          curl -sf -H "X-API-Key: ci-viewer-key" "http://localhost:8000/shadow-history?limit=1" | grep -q '"masked":true'
+          echo "viewer-role masking OK"
+
           # Unauthenticated request must be rejected, not accepted.
           http_status=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:8000/calculate-interest \
             -H "Content-Type: application/json" -d '{"loan_amount": 1000.00, "interest_rate": 5.00}')
@@ -89,6 +122,10 @@ jobs:
             exit 1
           fi
           echo "auth rejection OK"
+
+          # Prometheus metrics endpoint.
+          curl -sf -H "X-API-Key: ci-admin-key" http://localhost:8000/metrics | grep -q "shadow_runner_calculate_requests_total"
+          echo "metrics OK"
 
       - name: Container logs
         if: always()

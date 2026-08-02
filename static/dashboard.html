@@ -201,6 +201,13 @@
   function fmtPct(v) { return v === null || v === undefined ? "—" : v.toFixed(1) + "%"; }
   function fmtMoney(v) { return v === null || v === undefined ? "—" : "$" + Number(v).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}); }
   function fmtTime(ts) { return new Date(ts * 1000).toLocaleTimeString(); }
+  function fmtInputs(inputs) {
+    // Generic across any registered program's input shape (not just
+    // interest_calc's loan_amount/interest_rate) -- each program can have
+    // different field names/counts, so render whatever it actually sent.
+    if (!inputs) return "—";
+    return Object.entries(inputs).map(([k, v]) => `${k}=${typeof v === "number" ? v.toLocaleString() : v}`).join(", ");
+  }
 
   function severity(pct) {
     if (pct === null || pct === undefined) return { color: "var(--baseline)", label: "no data" };
@@ -299,7 +306,7 @@
       tooltip.style.left = (svgRect.left - svg.parentElement.getBoundingClientRect().left + (xFor(nearest) / W) * svgRect.width) + "px";
       tooltip.style.top = (svgRect.top - svg.parentElement.getBoundingClientRect().top + (yFor(p.pct) / H) * svgRect.height) + "px";
       tooltip.style.opacity = "1";
-      tooltip.innerHTML = `#${nearest + 1} — ${p.pct.toFixed(1)}% cumulative<br>${statusPill(p.row.status)} · ${fmtMoney(p.row.loan_amount)} @ ${p.row.interest_rate}%`;
+      tooltip.innerHTML = `#${nearest + 1} — ${p.pct.toFixed(1)}% cumulative<br>${statusPill(p.row.status)} · ${p.row.program} · ${fmtInputs(p.row.inputs)}`;
     });
     capture.addEventListener("mouseleave", () => {
       hoverDot.style.display = "none";
@@ -310,24 +317,27 @@
   function renderTable(historyDesc) {
     const container = document.getElementById("table-container");
     if (!historyDesc.length) {
-      container.innerHTML = `<div class="empty-state">Send a request to <code>/calculate-interest</code> to see activity here.</div>`;
+      container.innerHTML = `<div class="empty-state">Send a request to any registered program's <code>/programs/{name}/calculate</code> endpoint to see activity here.</div>`;
       return;
     }
+    const anyMasked = historyDesc.some(r => r.masked);
+    const pfx = r => r.masked ? "~" : "";
     const rows = historyDesc.slice(0, 20).map(r => `
       <tr>
         <td>${fmtTime(r.ts)}</td>
-        <td>${fmtMoney(r.loan_amount)}</td>
-        <td>${r.interest_rate}%</td>
-        <td>${r.legacy_result === null ? "—" : fmtMoney(r.legacy_result)}</td>
-        <td>${r.shadow_result === null ? "—" : fmtMoney(r.shadow_result)}</td>
-        <td>${r.diff === null ? "—" : r.diff.toFixed(4)}</td>
+        <td>${r.program}</td>
+        <td>${pfx(r)}${fmtInputs(r.inputs)}</td>
+        <td>${r.legacy_result === null ? "—" : pfx(r) + fmtMoney(r.legacy_result)}</td>
+        <td>${r.shadow_result === null ? "—" : pfx(r) + fmtMoney(r.shadow_result)}</td>
+        <td>${r.diff === null ? "—" : pfx(r) + r.diff.toFixed(4)}</td>
         <td>${statusPill(r.status)}</td>
       </tr>
     `).join("");
     container.innerHTML = `
+      ${anyMasked ? '<p class="chart-caption" style="margin-bottom:8px">~ values are masked to 2 significant figures for your role (viewer) — exact figures require operator/admin access</p>' : ""}
       <table>
         <thead><tr>
-          <th>Time</th><th>Loan</th><th>Rate</th><th>Legacy</th><th>Shadow</th><th>Diff</th><th>Status</th>
+          <th>Time</th><th>Program</th><th>Inputs</th><th>Legacy</th><th>Shadow</th><th>Diff</th><th>Status</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>

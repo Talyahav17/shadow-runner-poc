@@ -1,0 +1,25 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. LATE-FEE-CALC.
+
+       ENVIRONMENT DIVISION.
+
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01  WS-RATE-DECIMAL       PIC 9V9(9) COMP-3.
+
+       LINKAGE SECTION.
+       01  LS-BALANCE            PIC 9(5)V99.
+       01  LS-PENALTY-RATE       PIC 9V99.
+       01  LS-LATE-FEE           PIC 9(5)V99.
+
+       PROCEDURE DIVISION USING LS-BALANCE
+                                 LS-PENALTY-RATE
+                                 LS-LATE-FEE.
+
+       MAIN-LOGIC.
+           COMPUTE WS-RATE-DECIMAL = LS-PENALTY-RATE / 100
+           COMPUTE LS-LATE-FEE ROUNDED =
+               LS-BALANCE * WS-RATE-DECIMAL
+           GOBACK.
+
+       END PROGRAM LATE-FEE-CALC.

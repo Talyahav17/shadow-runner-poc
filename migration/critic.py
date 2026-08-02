@@ -15,59 +15,57 @@ import json
 import random
 import re
 
-FIXED_CASES = [
-    (0.00, 0.00),
-    (1000.00, 5.00),
-    (250000.00, 3.75),
-]
+from cobol_proxy import canonicalize_to_field_precision
 
 
 def run_empirical_comparison(
     candidate_fn,
     cobol_calculate,
-    canonicalize,
-    loan_dec_digits: int,
-    rate_dec_digits: int,
-    max_loan: float,
-    max_rate: float,
+    input_fields: list,
     n: int = 300,
     seed: int = 42,
     tolerance: float = 0.001,
 ) -> dict:
+    """Generic across any program's input signature: input_fields is the
+    list of cobol_parser.FieldSpec for that program's inputs, in calling
+    order. Both candidate_fn and cobol_calculate are called positionally
+    with the same N values, in that same order.
+    """
     rng = random.Random(seed)
-    cases = list(FIXED_CASES) + [(max_loan, max_rate), (0.01, max_rate)]
+    max_values = [float(f.max_value_str()) for f in input_fields]
+
+    cases = [
+        tuple(0.0 for _ in input_fields),           # all-zero edge case
+        tuple(max_values),                          # max-out-every-field edge case
+    ]
     for _ in range(n):
         precision = rng.randint(1, 6)
-        loan = round(rng.uniform(0, max_loan), precision)
-        rate = round(rng.uniform(0, max_rate), precision)
-        cases.append((loan, rate))
+        cases.append(tuple(round(rng.uniform(0, mv), precision) for mv in max_values))
 
     total = 0
     matches = 0
     failures = []
-    for loan, rate in cases:
-        canon_loan = canonicalize(loan, loan_dec_digits)
-        canon_rate = canonicalize(rate, rate_dec_digits)
+    for raw_values in cases:
+        values = tuple(
+            canonicalize_to_field_precision(v, f.dec_digits) for v, f in zip(raw_values, input_fields)
+        )
         try:
-            expected = cobol_calculate(canon_loan, canon_rate)
+            expected = cobol_calculate(*values)
         except Exception:
             # Ground truth itself rejected this input (out of range) --
             # not something the candidate can be judged against.
             continue
         total += 1
         try:
-            actual = candidate_fn(canon_loan, canon_rate)
+            actual = candidate_fn(*values)
         except Exception as exc:
-            failures.append({"loan": canon_loan, "rate": canon_rate, "error": repr(exc)})
+            failures.append({"inputs": list(values), "error": repr(exc)})
             continue
         diff = abs(actual - expected)
         if diff <= tolerance:
             matches += 1
         else:
-            failures.append({
-                "loan": canon_loan, "rate": canon_rate,
-                "expected": expected, "actual": actual, "diff": diff,
-            })
+            failures.append({"inputs": list(values), "expected": expected, "actual": actual, "diff": diff})
 
     match_rate = (matches / total * 100) if total else 0.0
     return {

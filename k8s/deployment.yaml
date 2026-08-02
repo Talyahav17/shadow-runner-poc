@@ -1,0 +1,57 @@
+# Multi-replica deployment. IMPORTANT: with more than one replica, the
+# Postgres backend (DATABASE_URL) is required, not SQLite -- SQLite's
+# file-based storage has no safe way to be shared for concurrent writes
+# across separate pods (unlike within one process, where main.py's own
+# per-program lock already serializes COBOL calls safely -- see
+# cobol_proxy.py). A single-replica deployment can still use the default
+# SQLite + a PersistentVolumeClaim instead; drop DATABASE_URL and mount a
+# PVC at /app/data in that case.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shadow-runner
+  labels:
+    app: shadow-runner
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: shadow-runner
+  template:
+    metadata:
+      labels:
+        app: shadow-runner
+    spec:
+      containers:
+        - name: shadow-runner
+          image: shadow-runner:latest  # replace with your registry/tag
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - secretRef:
+                name: shadow-runner-secrets  # see secret.yaml.example
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000  # must match the fixed UID the Dockerfile's `appuser` is created with --
+                             # runAsNonRoot alone can't verify a named user, only a numeric UID
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false  # SQLite path needs /app/data writable if used

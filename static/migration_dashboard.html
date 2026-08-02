@@ -86,7 +86,8 @@
 
   /* --- KPI row --- */
   .kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
-  .kpi-row.secondary { grid-template-columns: repeat(2, 1fr); margin-top: 12px; }
+  .kpi-row.secondary { grid-template-columns: repeat(5, 1fr); margin-top: 12px; }
+  @media (max-width: 700px) { .kpi-row.secondary { grid-template-columns: repeat(2, 1fr); } }
   .kpi-tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
   .kpi-label { font-size: 12px; color: var(--text-secondary); margin: 0 0 6px; }
   .kpi-value { font-size: 26px; font-weight: 600; margin: 0; }
@@ -167,6 +168,12 @@
       <p class="chart-caption">table view — the same data behind the chart above</p>
       <div id="table-container"></div>
     </div>
+
+    <div class="card">
+      <p class="chart-title">Audit log</p>
+      <p class="chart-caption">every human approval/rejection decision — who, when, and why</p>
+      <div id="audit-container"></div>
+    </div>
   </div>
 </div>
 
@@ -209,10 +216,12 @@
   function fmtTime(ts) { return ts ? new Date(ts * 1000).toLocaleString() : "—"; }
 
   const STATUS_MAP = {
-    pending:     { color: "var(--baseline)",        icon: "○", label: "Pending" },
-    in_progress: { color: "var(--status-warning)",  icon: "…", label: "In Progress" },
-    approved:    { color: "var(--status-good)",     icon: "✓", label: "Approved" },
-    failed:      { color: "var(--status-critical)", icon: "✕", label: "Failed" },
+    pending:            { color: "var(--baseline)",        icon: "○", label: "Pending" },
+    in_progress:        { color: "var(--status-warning)",  icon: "…", label: "In Progress" },
+    awaiting_approval:  { color: "var(--status-warning)",  icon: "⏸", label: "Awaiting Approval" },
+    approved:           { color: "var(--status-good)",     icon: "✓", label: "Approved" },
+    rejected:           { color: "var(--status-critical)", icon: "✕", label: "Rejected" },
+    failed:             { color: "var(--status-serious)",  icon: "!", label: "Failed" },
   };
 
   function statusPill(status) {
@@ -224,8 +233,8 @@
     const primary = [
       { label: "Total programs", value: stats.total_programs, color: null },
       { label: "Approved", value: stats.approved, color: "var(--status-good)" },
+      { label: "Awaiting approval", value: stats.awaiting_approval, color: "var(--status-warning)" },
       { label: "In progress", value: stats.in_progress, color: "var(--status-warning)" },
-      { label: "Pending", value: stats.pending, color: "var(--baseline)" },
     ];
     document.getElementById("kpi-row").innerHTML = primary.map(t => `
       <div class="kpi-tile">
@@ -235,7 +244,9 @@
     `).join("");
 
     const secondary = [
-      { label: "Failed", value: stats.failed, color: "var(--status-critical)" },
+      { label: "Pending", value: stats.pending, color: "var(--baseline)" },
+      { label: "Rejected", value: stats.rejected, color: "var(--status-critical)" },
+      { label: "Failed", value: stats.failed, color: "var(--status-serious)" },
       { label: "Avg iterations to approval", value: stats.avg_iterations_to_approval === null ? "—" : stats.avg_iterations_to_approval, color: null },
       { label: "Total iterations run", value: stats.total_iterations_run, color: null },
     ];
@@ -359,6 +370,32 @@
     `;
   }
 
+  function renderAuditLog(entries) {
+    const container = document.getElementById("audit-container");
+    if (!entries.length) {
+      container.innerHTML = `<div class="empty-state">No approval/rejection decisions recorded yet. Use <code>approve_migration.py</code> once a program reaches "Awaiting Approval".</div>`;
+      return;
+    }
+    const ACTION_LABEL = { migration_approved: "✓ Approved", migration_rejected: "✕ Rejected" };
+    const rows = entries.slice(0, 20).map(e => `
+      <tr>
+        <td>${fmtTime(e.ts)}</td>
+        <td>${e.actor}</td>
+        <td>${ACTION_LABEL[e.action] || e.action}</td>
+        <td>${e.program || "—"}</td>
+        <td>${e.detail || "—"}</td>
+      </tr>
+    `).join("");
+    container.innerHTML = `
+      <table>
+        <thead><tr>
+          <th>Time</th><th>Actor</th><th>Decision</th><th>Program</th><th>Reason</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+  }
+
   async function refresh() {
     try {
       const stats = await authedFetch("/migration-stats");
@@ -373,6 +410,9 @@
       } else {
         renderTrend([]);
       }
+
+      const auditEntries = await authedFetch("/audit-log?limit=50");
+      renderAuditLog(auditEntries);
     } catch (e) {
       if (e.unauthorized) {
         document.getElementById("gate-error").textContent = "Invalid API key.";

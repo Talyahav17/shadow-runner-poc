@@ -1,0 +1,14 @@
+# Only needed for the single-replica + SQLite deployment option (see
+# k8s/README.md). If you're using Postgres (DATABASE_URL, the
+# multi-replica default), you don't need this at all -- Postgres holds
+# the data, not a volume mounted into this pod.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: shadow-runner-data
+spec:
+  accessModes:
+    - ReadWriteOnce  # single pod only -- see k8s/README.md for why this can't be ReadWriteMany
+  resources:
+    requests:
+      storage: 1Gi
