@@ -1,0 +1,38 @@
+# Registry of legacy COBOL programs this Shadow Runner instance fronts.
+#
+# Adding a new program to migrate is: compile it, write its modern_logic
+# equivalent (or generate one with migrate.py), and add one entry here --
+# no code changes to main.py needed. Field widths and the calling
+# convention are parsed automatically from the COBOL source itself
+# (cobol_parser.py); unsigned and signed DISPLAY numeric fields
+# (PIC 9(n)V9(m) and PIC S9(n)V9(m)) are supported -- see
+# cobol_parser.py's module docstring for what's still out of scope.
+#
+# input_params: friendly API field names, positionally matched to the
+# COBOL program's "PROCEDURE DIVISION USING" parameter order (excluding
+# the last parameter, which is always treated as the result/output field).
+
+programs:
+  - name: interest_calc
+    display_name: "Interest Calculator"
+    cobol_source: interest_calc.cbl
+    shared_library: interest_calc.so
+    modern_module: modern_logic
+    modern_function: run_modern_logic
+    input_params: [loan_amount, interest_rate]
+
+  - name: late_fee_calc
+    display_name: "Late Fee Calculator"
+    cobol_source: late_fee_calc.cbl
+    shared_library: late_fee_calc.so
+    modern_module: late_fee_logic
+    modern_function: run_modern_logic
+    input_params: [balance, penalty_rate]
+
+  - name: gcd_calc
+    display_name: "Greatest Common Divisor"
+    cobol_source: gcd_calc.cbl
+    shared_library: gcd_calc.so
+    modern_module: gcd_logic
+    modern_function: run_modern_logic
+    input_params: [a, b]

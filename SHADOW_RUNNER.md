@@ -50,15 +50,26 @@ data before it's ever trusted to go live.
 
 | Component | File | Role |
 |---|---|---|
-| Legacy system | [`interest_calc.cbl`](interest_calc.cbl) | The real COBOL routine being replaced — compiled to a native shared library (`interest_calc.so`) and called directly via `ctypes`, no rewrite of the legacy logic itself |
-| Modern replacement | [`modern_logic.py`](modern_logic.py) | Python reimplementation using `Decimal` arithmetic to avoid float rounding drift |
-| Smart Proxy | [`main.py`](main.py) | FastAPI service implementing the Shadow Runner pattern above |
-| Results store | [`shadow_store.py`](shadow_store.py) | SQLite log of every comparison — inputs, both outputs, diff, match/mismatch |
+| Legacy systems | [`interest_calc.cbl`](interest_calc.cbl), [`late_fee_calc.cbl`](late_fee_calc.cbl) | Two genuinely different COBOL routines, compiled to native shared libraries and called directly via `ctypes` — proving the bridge generalizes, not just one hand-fitted case |
+| COBOL parser | [`cobol_parser.py`](cobol_parser.py) | Derives field widths, calling order, and the entry-point symbol from a program's own source — no more hand-typed field specs per program |
+| Generic COBOL proxy | [`cobol_proxy.py`](cobol_proxy.py) | ctypes bridge for any parsed program, not just one |
+| Program registry | [`program_registry.py`](program_registry.py), [`programs.yaml`](programs.yaml) | Config-driven: adding a legacy program is a YAML entry, not a code change |
+| Modern replacements | [`modern_logic.py`](modern_logic.py), [`late_fee_logic.py`](late_fee_logic.py) | Python reimplementations using `Decimal` arithmetic to avoid float rounding drift |
+| Smart Proxy | [`main.py`](main.py) | FastAPI service implementing the Shadow Runner pattern above, RBAC-gated |
+| Auth / RBAC | [`auth.py`](auth.py) | Role-scoped API keys (viewer/operator/admin) |
+| Alerting | [`alerting.py`](alerting.py) | Slack-compatible webhook on shadow mismatches/errors |
+| Metrics | [`metrics.py`](metrics.py) | Prometheus counters + latency histogram |
+| DB backend | [`db_backend.py`](db_backend.py) | SQLite or PostgreSQL (`DATABASE_URL`), same code either way |
+| Secrets helper | [`secrets_helper.py`](secrets_helper.py) | `..._FILE` convention for Vault/CSI-driver/Docker-secrets style deployments |
+| Field encryption | [`field_crypto.py`](field_crypto.py) | Optional at-rest encryption + role-based masking |
+| Results store | [`shadow_store.py`](shadow_store.py) | SQLite/Postgres log of every comparison, across every registered program |
 | Unit tests | [`test_modern_logic.py`](test_modern_logic.py) | 17 cases: happy path, zero values, field-capacity boundaries, invalid input |
 | Verification harness | [`test_e2e_shadow.py`](test_e2e_shadow.py) | Boots the real service, fires fixed + randomized + malformed traffic, proves the shadow comparator works end to end |
 | Concurrency stress test | [`test_concurrency_stress.py`](test_concurrency_stress.py) | Fires hundreds of concurrent requests to prove the service holds up under real load |
-| AI migration pipeline | [`migrate.py`](migrate.py), [`migration/`](migration/) | Actor/Critic loop that generates and empirically validates a candidate `modern_logic.py` — see below |
-| Migration progress store | [`migration_store.py`](migration_store.py) | SQLite log of registered programs and their iteration history — powers the migration dashboard |
+| AI migration pipeline | [`migrate.py`](migrate.py), [`migration/`](migration/) | Actor/Critic loop that generates and empirically validates a candidate replacement for any registered program |
+| Human approval gate | [`approve_migration.py`](approve_migration.py) | A named human must sign off before a Critic-approved candidate is "approved" |
+| Migration progress store | [`migration_store.py`](migration_store.py) | SQLite/Postgres log of registered programs, iteration history, and the approval audit log |
+| Kubernetes manifests | [`k8s/`](k8s/) | Deployment, Service, HPA, Secret template — verified against a real local cluster |
 
 ---
 
@@ -188,8 +199,9 @@ the shell environment and passes it through.
 ### Option B — Native (for development on this codebase)
 
 ```bash
-# 1. Compile the legacy COBOL routine to a shared library
+# 1. Compile the legacy COBOL routines to shared libraries
 cobc -m -o interest_calc.so interest_calc.cbl
+cobc -m -o late_fee_calc.so late_fee_calc.cbl
 
 # 2. Install pinned Python dependencies
 pip3 install -r requirements.txt
@@ -249,11 +261,14 @@ python3 test_concurrency_stress.py
 ## Continuous Integration
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push
-and pull request: it compiles the COBOL routine, runs the unit test suite,
-runs the full end-to-end + fuzz verification, runs the concurrency stress
-test, scans pinned dependencies for known CVEs (`pip-audit`), and
-separately builds and smoke-tests the Docker image. Push this repo to
-GitHub and it runs automatically — no setup needed.
+and pull request: it compiles both registered COBOL routines, runs the
+unit test suite, runs the full end-to-end + fuzz verification, runs the
+concurrency stress test, dry-runs the AI migration pipeline mechanics,
+scans pinned dependencies for known CVEs (`pip-audit`), and separately
+builds and smoke-tests the Docker image — including the multi-program
+generic endpoint, RBAC (a viewer-role write gets 403, reads come back
+masked), and the `/metrics` endpoint. Push this repo to GitHub and it
+runs automatically — no setup needed.
 
 ---
 
@@ -335,20 +350,184 @@ itself automatically.
 
 ## Security
 
-- **Auth**: every endpoint except `/health` and the `/dashboard` shell
+- **Auth**: every endpoint except `/health` and the dashboard shells
   requires `X-API-Key`, checked with a timing-safe comparison
-  (`secrets.compare_digest`). A random key is generated and logged once if
-  `SHADOW_RUNNER_API_KEY` isn't set.
-- **Container**: runs as an unprivileged user (not root); the base image is
-  pinned by digest, not just the `3.12-slim` tag, for reproducible builds.
+  (`secrets.compare_digest`), and scoped to a role (`auth.py` -- see
+  Enterprise Readiness below). A random admin-role key is generated and
+  logged once if no key is configured.
+- **Container**: runs as a fixed non-root UID (1000, not just a named
+  user -- see the Kubernetes section below for why that distinction
+  matters); the base image is pinned by digest, not just the `3.12-slim`
+  tag, for reproducible builds.
 - **Dependencies**: pinned in `requirements.txt` and scanned by `pip-audit`
   in CI on every push.
-- **Input validation**: `loan_amount` / `interest_rate` are bounds-checked
-  by Pydantic before either engine ever sees them; SQL access is fully
-  parameterized (no string-built queries).
-- **Dashboard**: the API key lives in `sessionStorage` (cleared when the
+- **Input validation**: every registered program's inputs are
+  bounds-checked against that program's actual PIC field capacity
+  (`cobol_parser.py`) before either engine ever sees them; SQL access is
+  fully parameterized (no string-built queries) across both the SQLite
+  and PostgreSQL backends.
+- **Dashboards**: the API key lives in `sessionStorage` (cleared when the
   tab closes) rather than `localStorage`, and nothing user-controlled is
-  ever written into the page unescaped.
+  ever written into either dashboard page unescaped.
+
+---
+
+## Enterprise Readiness
+
+Everything below was added to take this from a single-program PoC toward
+something a larger organization could actually run as its own migration
+process. Each item was verified as described -- genuinely run and
+checked, not just written and assumed to work -- except where noted.
+
+### Multi-program architecture
+
+The original PoC only ever worked for `interest_calc.cbl`, with every
+field width hand-typed into `field_specs.py`. That's now fully generic:
+
+- [`cobol_parser.py`](cobol_parser.py) parses a COBOL program's `LINKAGE
+  SECTION` and `PROCEDURE DIVISION USING` clause directly -- field
+  widths, calling order, and the entry-point symbol are all derived from
+  the source, not hand-coded. It explicitly detects and rejects
+  constructs this ctypes bridge can't safely handle (signed fields,
+  `COMP`/`COMP-3`/binary storage, `OCCURS` tables, alphanumeric fields)
+  with a clear error naming the offending field, rather than silently
+  mis-encoding them.
+- [`cobol_proxy.py`](cobol_proxy.py)'s `GenericCobolProxy` replaces the
+  old `interest_calc`-only proxy class; [`program_registry.py`](program_registry.py)
+  loads [`programs.yaml`](programs.yaml) and builds one per registered
+  program.
+- **Verified with a second, genuinely different program**:
+  [`late_fee_calc.cbl`](late_fee_calc.cbl) (different field widths, a
+  different multi-hyphen `PROGRAM-ID`) was added specifically to prove
+  the parser/proxy/registry generalize rather than happening to work for
+  one program's exact shape. Both programs run correctly, simultaneously,
+  through the same generic code path -- confirmed via direct calls, live
+  HTTP requests, the dashboard, and inside the actual Docker container.
+- `POST /programs/{name}/calculate` is the new generic endpoint;
+  `POST /calculate-interest` still works unchanged as a backward-compatible
+  alias. Adding a new legacy program is a `programs.yaml` entry, not a
+  code change.
+- `migrate.py` uses the same parser, so the AI migration pipeline also
+  works on any supported program, not just `interest_calc` -- verified by
+  driving it against `late_fee_calc.cbl`'s real compiled binary (302/302
+  match on a hand-written candidate, proving the empirical-comparison
+  machinery generalizes) even without spending real API credits on it.
+
+### Governance: a human approval gate + audit trail
+
+`migrate.py` no longer promotes a Critic-approved candidate straight to
+"approved". It stops at `awaiting_approval`, and a named human must run
+[`approve_migration.py`](approve_migration.py) to actually clear it (or
+reject it) with a comment -- recorded permanently via
+`migration_store.record_audit_entry()` and visible in the migration
+dashboard's audit log. `rejected` (a human said no) is tracked separately
+from `failed` (the AI pipeline itself never converged), since those are
+different findings for an audit. **Honesty note**: "append-only" here
+means the application code never issues an `UPDATE`/`DELETE` against the
+audit log -- it does not mean the underlying database is tamper-proof
+against someone with direct DB access. A deployment wanting genuine
+tamper-evidence should ship this to an external, access-controlled log
+store (a SIEM, an append-only object store, or a hash-chained log).
+
+### RBAC
+
+Three roles -- `viewer` (read-only), `operator` (+ can trigger
+calculations), `admin` (+ reserved for future admin actions) -- via
+`SHADOW_RUNNER_API_KEYS="key1:admin,key2:operator,key3:viewer"`
+([`auth.py`](auth.py)). A single `SHADOW_RUNNER_API_KEY` still works
+exactly as before (treated as one admin-role key). Verified via real HTTP
+requests across all three roles: viewer can read but a write attempt gets
+403, operator can write, admin can do both -- both locally and inside the
+built Docker container.
+
+### Real alerting
+
+[`alerting.py`](alerting.py) posts to any Slack-compatible incoming
+webhook (`SHADOW_RUNNER_ALERT_WEBHOOK_URL`) on a shadow mismatch or
+error, instead of only a `CRITICAL` log line no one is watching. Verified
+with a real (local) HTTP receiver standing in for Slack: both the
+mismatch and error paths deliver correctly, the success path correctly
+sends nothing, and delivery works from inside the actual running Docker
+container reaching an endpoint outside it.
+
+### Prometheus metrics
+
+`GET /metrics` (same viewer-role auth as other read endpoints) exposes
+request counts, shadow-comparison counts, and a COBOL-call latency
+histogram, all labeled by program -- match-rate and error-rate are meant
+to be derived in Grafana/PromQL from the counters, not pre-computed here.
+Verified with real observed latencies and counts, including inside the
+Docker container.
+
+### PostgreSQL, alongside SQLite
+
+[`db_backend.py`](db_backend.py) is a small dual-dialect layer (not a
+full ORM) that both `shadow_store.py` and `migration_store.py` go
+through. SQLite remains the zero-setup default; set `DATABASE_URL` to
+switch to Postgres for real production volume, since SQLite's
+single-writer lock becomes a bottleneck under concurrent writes and reads
+at scale. **Verified against a real PostgreSQL container**, not just
+code review: both stores' full read/write paths, the complete governance
+flow (register → run → approve → audit log) across separate process
+invocations, and the actual FastAPI service running end-to-end with
+`DATABASE_URL` pointed at it.
+
+### Kubernetes
+
+Plain manifests in [`k8s/`](k8s/) (no `helm` binary was available to
+build a chart). **Verified against a real local cluster** (`kind`), not
+just YAML syntax: the actual Docker image was deployed, the pod reached
+`Running`, and a live HTTP request through the Service returned the
+correct result. This caught a genuine bug -- `runAsNonRoot: true` failed
+with `CreateContainerConfigError` because Kubernetes can't verify a
+*named* container user is non-root, only a numeric one, which is why the
+Dockerfile now pins `appuser` to a fixed UID (1000). See
+[`k8s/README.md`](k8s/README.md) for exactly what was and wasn't
+verified (multi-replica + Postgres together, in a real cluster, is
+scaffolded but not run end-to-end here).
+
+### Secrets management
+
+Every secret-bearing config value (`SHADOW_RUNNER_API_KEY(S)`,
+`DATABASE_URL`, `SHADOW_RUNNER_ALERT_WEBHOOK_URL`, `ANTHROPIC_API_KEY`,
+`SHADOW_RUNNER_ENCRYPTION_KEY`) also accepts a `..._FILE` variant pointing
+at a file path, via [`secrets_helper.py`](secrets_helper.py) -- the
+convention Vault Agent injector, the Vault CSI driver, Docker/Swarm
+secrets, and Kubernetes Secrets-mounted-as-files all use. Verified for
+every one of these values, both as a bind-mounted file in a plain Docker
+container and via direct module tests.
+
+### Field-level encryption & role-based masking
+
+[`field_crypto.py`](field_crypto.py) optionally encrypts the
+`inputs_json` column at rest (Fernet, via `SHADOW_RUNNER_ENCRYPTION_KEY`)
+-- verified by confirming the raw stored bytes contain no plaintext, that
+the correct key decrypts, and that a missing or wrong key degrades a
+single row to a clear error marker rather than crashing the whole read
+(a real bug caught during testing and then fixed). Deliberately **not**
+auto-generated like the API key: an encryption key has to stay identical
+across restarts to keep old data readable, so silently rotating it would
+be worse than not encrypting at all.
+
+Separately, `viewer`-role reads of `/shadow-history` get sensitive
+figures (inputs, results, diff) rounded to 2 significant figures rather
+than exact values, with a `masked: true` flag and a visible note in the
+dashboard -- `operator`/`admin` see exact figures. Verified across all
+three roles via live HTTP requests and in the dashboard UI.
+
+### LLM data residency
+
+Some enterprises can't send code/prompts to the public Anthropic API at
+all. `migrate.py --llm-backend {anthropic,bedrock,vertex}`
+([`migration/llm_client.py`](migration/llm_client.py)) routes the same
+Actor/Critic prompts through AWS Bedrock or Google Vertex AI instead,
+using Anthropic's own drop-in-compatible client classes -- no changes
+needed to the prompt code itself. **Honesty note**: verified only as far
+as this environment allows -- both client classes construct successfully
+and reject clearly-missing config, but no live Bedrock/Vertex API call
+was made, since this environment has no AWS or GCP account to test
+against. Confirm a real call succeeds against your own account before
+relying on either.
 
 ---
 

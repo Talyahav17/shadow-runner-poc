@@ -4,11 +4,16 @@ services:
     ports:
       - "8000:8000"
     environment:
-      # Set SHADOW_RUNNER_API_KEY in a .env file (see .env.example) or the
-      # host shell to pin a fixed key across restarts. Left unset/empty,
-      # the service falls back to its own secure default: a random key
-      # generated and logged once at startup.
+      # Set these in a .env file (see .env.example) or the host shell to
+      # pin fixed keys across restarts. Left unset/empty, the service
+      # falls back to its own secure default: a random admin-role key
+      # generated and logged once at startup. SHADOW_RUNNER_API_KEYS (if
+      # set) takes priority for role-scoped (viewer/operator/admin) auth.
       - SHADOW_RUNNER_API_KEY=${SHADOW_RUNNER_API_KEY:-}
+      - SHADOW_RUNNER_API_KEYS=${SHADOW_RUNNER_API_KEYS:-}
+      # Optional: page on shadow mismatches/errors instead of only logging
+      # them -- see .env.example and alerting.py.
+      - SHADOW_RUNNER_ALERT_WEBHOOK_URL=${SHADOW_RUNNER_ALERT_WEBHOOK_URL:-}
     volumes:
       - shadow_data:/app/data
     restart: unless-stopped
