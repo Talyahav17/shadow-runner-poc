@@ -16,8 +16,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY interest_calc.cbl late_fee_calc.cbl programs.yaml \
-     field_specs.py modern_logic.py late_fee_logic.py \
+COPY interest_calc.cbl late_fee_calc.cbl gcd_calc.cbl programs.yaml \
+     field_specs.py modern_logic.py late_fee_logic.py gcd_logic.py \
      cobol_parser.py cobol_proxy.py program_registry.py db_backend.py \
      secrets_helper.py field_crypto.py shadow_store.py migration_store.py \
      auth.py alerting.py metrics.py main.py ./
@@ -27,7 +27,8 @@ COPY static ./static
 # program means adding it here too (or switching to a build-time loop
 # over programs.yaml if the registry grows large).
 RUN cobc -m -o interest_calc.so interest_calc.cbl \
-    && cobc -m -o late_fee_calc.so late_fee_calc.cbl
+    && cobc -m -o late_fee_calc.so late_fee_calc.cbl \
+    && cobc -m -o gcd_calc.so gcd_calc.cbl
 
 # Match-rate history persists here; mount a volume at /app/data to keep it
 # across container restarts (see docker-compose.yml).
